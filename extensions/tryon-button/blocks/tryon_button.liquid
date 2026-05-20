@@ -1,0 +1,224 @@
+{{ 'tryon.css' | asset_url | stylesheet_tag }}
+
+{% assign tryon_product_image = product.featured_image %}
+{% if tryon_product_image == blank and product.selected_or_first_available_variant.featured_image %}
+  {% assign tryon_product_image = product.selected_or_first_available_variant.featured_image %}
+{% endif %}
+
+{% assign tryon_variant_id = product.selected_or_first_available_variant.id %}
+{% assign tryon_accent = block.settings.accent_color | default: '#a8341a' %}
+
+{% if product %}
+<div
+  class="tryonai-root"
+  data-stage="idle"
+  data-app-url="{{ block.settings.app_url }}"
+  data-product-handle="{{ product.handle }}"
+  data-product-title="{{ product.title | escape }}"
+  data-product-image-url="{% if tryon_product_image %}{{ tryon_product_image | image_url: width: 1024 }}{% endif %}"
+  data-product-variant-id="{{ tryon_variant_id }}"
+  style="--tryonai-accent: {{ tryon_accent }};"
+  {{ block.shopify_attributes }}
+>
+  <button type="button" class="tryonai-launcher" aria-haspopup="dialog">
+    <span class="tryonai-launcher__line">
+      <span class="tryonai-launcher__text">{{ block.settings.button_label | default: 'Try it on' }}</span>
+      <span class="tryonai-launcher__arrow" aria-hidden="true">
+        <svg viewBox="0 0 28 12" width="28" height="12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="square">
+          <path d="M0 6h26M21 1l5 5-5 5"/>
+        </svg>
+      </span>
+    </span>
+  </button>
+
+  <div class="tryonai-modal" hidden role="dialog" aria-modal="true" aria-labelledby="tryonai-title-{{ block.id }}">
+    <div class="tryonai-scrim" data-action="dismiss" aria-hidden="true"></div>
+
+    <div class="tryonai-panel" tabindex="-1">
+      <header class="tryonai-topbar">
+        <button type="button" class="tryonai-close" data-action="dismiss" aria-label="Close">
+          <span class="tryonai-close__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg>
+          </span>
+        </button>
+      </header>
+
+      <div class="tryonai-live" aria-live="polite" aria-atomic="true"></div>
+
+      <div class="tryonai-content">
+        <!-- STAGE: COMPOSE -->
+        <section class="tryonai-stage tryonai-stage--compose">
+          <header class="tryonai-stage__header">
+            <h2 id="tryonai-title-{{ block.id }}" class="tryonai-title">{{ block.settings.modal_title | default: 'Try it on' }}</h2>
+            <p class="tryonai-sub">{{ block.settings.modal_subtitle | default: "Upload a photo and we'll show you wearing this item." }}</p>
+          </header>
+
+          <div class="tryonai-grid">
+            <div class="tryonai-card tryonai-card--selfie">
+              <span class="tryonai-card__label">Your photo</span>
+              <label class="tryonai-drop">
+                <input type="file" accept="image/jpeg,image/png,image/webp" class="tryonai-file-input" />
+                <span class="tryonai-drop__icon" aria-hidden="true">
+                  <svg viewBox="0 0 32 32" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="square">
+                    <path d="M16 6v20M6 16h20"/>
+                  </svg>
+                </span>
+                <span class="tryonai-drop__cta">Add your photo</span>
+                <img class="tryonai-drop__preview" alt="" hidden />
+                <button type="button" class="tryonai-drop__clear" data-action="clear-selfie" aria-label="Remove photo" hidden>
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg>
+                </button>
+              </label>
+            </div>
+
+            <div class="tryonai-card tryonai-card--item">
+              <span class="tryonai-card__label">The garment</span>
+              <div class="tryonai-item" data-detected="false">
+                <div class="tryonai-item__thumb">
+                  <img class="tryonai-item__image" alt="" />
+                  <span class="tryonai-item__placeholder">
+                    <span class="tryonai-item__placeholder-dot" aria-hidden="true"></span>
+                    <span>Detecting</span>
+                  </span>
+                </div>
+                <div class="tryonai-item__meta">
+                  <div class="tryonai-item__title"></div>
+                  <button type="button" class="tryonai-item__replace" data-action="replace-garment">Use a different photo &rarr;</button>
+                </div>
+              </div>
+              <input type="file" accept="image/jpeg,image/png,image/webp" class="tryonai-garment-input" />
+            </div>
+          </div>
+
+          <label class="tryonai-consent">
+            <input type="checkbox" class="tryonai-consent-input" />
+            <span class="tryonai-consent-box" aria-hidden="true">
+              <svg class="tryonai-consent-tick" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1.5 6.2l4 4L14.5 1.5"/>
+              </svg>
+            </span>
+            <span class="tryonai-consent-text">I agree to processing my photo for try-on. Your photo is private and deleted after 7 days.</span>
+          </label>
+
+          <p class="tryonai-error" role="alert" hidden></p>
+        </section>
+
+        <!-- STAGE: GENERATING -->
+        <section class="tryonai-stage tryonai-stage--generating" aria-hidden="true">
+          <div class="tryonai-loom">
+            <img class="tryonai-loom__selfie" alt="" />
+            <img class="tryonai-loom__garment" alt="" />
+            <span class="tryonai-loom__sweep" aria-hidden="true"></span>
+            <div class="tryonai-loom__veil"></div>
+          </div>
+          <div class="tryonai-progress" aria-hidden="true">
+            <span class="tryonai-progress__caption">00<span class="tryonai-progress__sep">:</span>15</span>
+            <div class="tryonai-progress__track">
+              <div class="tryonai-progress__bar"></div>
+            </div>
+            <span class="tryonai-progress__dots">
+              <span></span><span></span><span></span>
+            </span>
+          </div>
+          <p class="tryonai-status">Looking at your photo</p>
+          <p class="tryonai-status-hint">This takes about 15 seconds</p>
+        </section>
+
+        <!-- STAGE: REVEAL -->
+        <section class="tryonai-stage tryonai-stage--reveal" aria-hidden="true">
+          <div class="tryonai-compare" style="--tryonai-split: 100%;">
+            <img class="tryonai-compare__before" alt="Your photo" />
+            <img class="tryonai-compare__after" alt="Try-on result" />
+            <span class="tryonai-compare__tag tryonai-compare__tag--before" aria-hidden="true">Before</span>
+            <span class="tryonai-compare__tag tryonai-compare__tag--after" aria-hidden="true">After</span>
+            <input
+              type="range"
+              class="tryonai-compare__slider"
+              min="0"
+              max="100"
+              value="50"
+              aria-label="Compare before and after"
+            />
+            <div class="tryonai-compare__handle" aria-hidden="true">
+              <span class="tryonai-compare__handle-circle"></span>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"><path d="M9 6l-6 6 6 6M15 6l6 6-6 6"/></svg>
+            </div>
+          </div>
+          <div class="tryonai-actions">
+            <button type="button" class="tryonai-action" data-action="restart">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square"><path d="M3 12a9 9 0 0 1 15.5-6.4L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.4L3 16M3 21v-5h5"/></svg>
+              <span>Try again</span>
+            </button>
+            <button type="button" class="tryonai-action" data-action="save">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square"><path d="M12 4v12m0 0l-5-5m5 5l5-5M4 20h16"/></svg>
+              <span>Save</span>
+            </button>
+            <button type="button" class="tryonai-action" data-action="share">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square"><path d="M4 12v8h16v-8M16 6l-4-4-4 4M12 2v14"/></svg>
+              <span>Share</span>
+            </button>
+            <button type="button" class="tryonai-action tryonai-action--primary" data-action="add-to-cart">
+              <span>Add to cart</span>
+              <span class="tryonai-action__arrow" aria-hidden="true">&rarr;</span>
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <footer class="tryonai-bottombar">
+        <div class="tryonai-bottombar__cta">
+          <button type="button" class="tryonai-cta" data-action="generate" disabled>
+            <span class="tryonai-cta__label">Try it on</span>
+            <span class="tryonai-cta__arrow" aria-hidden="true">
+              <svg viewBox="0 0 28 12" width="28" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square">
+                <path d="M0 6h26M21 1l5 5-5 5"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </footer>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<script src="{{ 'tryon.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "AI Try-On Button",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "button_label",
+      "label": "Button label",
+      "default": "Try it on"
+    },
+    {
+      "type": "text",
+      "id": "modal_title",
+      "label": "Modal title",
+      "default": "Try it on"
+    },
+    {
+      "type": "text",
+      "id": "modal_subtitle",
+      "label": "Modal subtitle",
+      "default": "Upload a photo and we'll show you wearing this item."
+    },
+    {
+      "type": "color",
+      "id": "accent_color",
+      "label": "Accent color",
+      "default": "#a8341a"
+    },
+    {
+      "type": "text",
+      "id": "app_url",
+      "label": "App URL (dev tunnel or production)",
+      "info": "Phase 1: paste the URL from `shopify app dev` output. Replaced by App Proxy in Phase 2."
+    }
+  ]
+}
+{% endschema %}

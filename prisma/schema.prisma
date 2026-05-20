@@ -1,0 +1,113 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model Shop {
+  id          String            @id @default(cuid())
+  domain      String            @unique
+  installedAt DateTime          @default(now())
+  settings    MerchantSettings?
+  billing     BillingState?
+}
+
+model MerchantSettings {
+  id                  String   @id @default(cuid())
+  shop                String   @unique
+  shopRef             Shop     @relation(fields: [shop], references: [domain], onDelete: Cascade)
+  capOverride         Int?
+  pendingCredit       Float    @default(0)
+  commissionRate      Float?
+  buttonLabel         String   @default("Try it on")
+  accentColor         String   @default("#000000")
+  allowedProductTypes String   @default("[]")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model BillingState {
+  id                   String    @id @default(cuid())
+  shop                 String    @unique
+  shopRef              Shop      @relation(fields: [shop], references: [domain], onDelete: Cascade)
+  plan                 String    @default("trial")
+  status               String    @default("active")
+  subscriptionId       String?
+  trialStartedAt       DateTime  @default(now())
+  paidPlanStartedAt    DateTime?
+  currentCycleStart    DateTime?
+  currentCycleEnd      DateTime?
+  overageLineItemId    String?
+  commissionLineItemId String?
+  monthlyCap           Int       @default(30)
+  trialEndsAt          DateTime?
+  currentCycleUsage    Int       @default(0)
+  currentCycleCommission Float   @default(0)
+  updatedAt            DateTime  @updatedAt
+}
+
+model UsageLog {
+  id              String   @id @default(cuid())
+  shop            String
+  requestId       String   @unique
+  openaiRequestId String?
+  plan            String
+  costUsd         Float
+  inputTokens     Int?
+  outputTokens   Int?
+  openaiMs        Int?
+  status          String   @default("ok")
+  size            String
+  cycleStart      DateTime
+  createdAt       DateTime @default(now())
+
+  @@index([shop, cycleStart])
+  @@index([createdAt])
+  @@index([shop, status, cycleStart])
+}
+
+model AttributedOrder {
+  id                  String    @id @default(cuid())
+  shop                String
+  orderId             String    @unique
+  requestId           String
+  subtotalUsd         Float
+  commissionUsd       Float
+  commissionRate      Float
+  usageChargeId       String?
+  refundedAt          DateTime?
+  refundedSubtotalUsd Float?
+  commissionCreditUsd Float?
+  createdAt           DateTime  @default(now())
+
+  @@index([shop, createdAt])
+  @@index([requestId])
+}
