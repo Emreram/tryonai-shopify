@@ -1,342 +1,353 @@
-import { useEffect } from "react";
-import type {
-  ActionFunctionArgs,
-  HeadersFunction,
-  LoaderFunctionArgs,
-} from "react-router";
-import { useFetcher } from "react-router";
-import { useAppBridge } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
+import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
+import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
-export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+import { authenticate } from "../shopify.server";
+import db from "../db.server";
+import {
+  COMMISSION_GRACE_DAYS,
+  PLAN_DISPLAY,
+  PLANS,
+  TRIAL_DAYS,
+  TRIAL_TRYONS,
+  computeCap,
+  isPlanKey,
+  type PlanKey,
+} from "../lib/plans";
 
-  return null;
-};
+interface RecentTryOn {
+  id: string;
+  createdAt: string;
+  status: string;
+  size: string;
+  costUsd: number;
+}
 
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
-  const response = await admin.graphql(
-    `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
-            id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
-            }
-            demoInfo: metafield(namespace: "$app", key: "demo_info") {
-              jsonValue
-            }
-          }
-        }
-      }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
-          metafields: [
-            {
-              namespace: "$app",
-              key: "demo_info",
-              value: "Created by React Router Template",
-            },
-          ],
-        },
-      },
-    },
-  );
-  const responseJson = await response.json();
+interface RecentOrder {
+  id: string;
+  orderId: string;
+  createdAt: string;
+  subtotalUsd: number;
+  commissionUsd: number;
+  refunded: boolean;
+}
 
-  const product = responseJson.data!.productCreate!.product!;
-  const variantId = product.variants.edges[0]!.node!.id!;
-
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
-  );
-
-  const variantResponseJson = await variantResponse.json();
-
-  const metaobjectResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $metaobject: MetaobjectUpsertInput!) {
-      metaobjectUpsert(handle: $handle, metaobject: $metaobject) {
-        metaobject {
-          id
-          handle
-          title: field(key: "title") {
-            jsonValue
-          }
-          description: field(key: "description") {
-            jsonValue
-          }
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
-    {
-      variables: {
-        handle: {
-          type: "$app:example",
-          handle: "demo-entry",
-        },
-        metaobject: {
-          fields: [
-            { key: "title", value: "Demo Entry" },
-            {
-              key: "description",
-              value:
-                "This metaobject was created by the Shopify app template to demonstrate the metaobject API.",
-            },
-          ],
-        },
-      },
-    },
-  );
-
-  const metaobjectResponseJson = await metaobjectResponse.json();
-
-  return {
-    product: responseJson!.data!.productCreate!.product,
-    variant:
-      variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
-    metaobject:
-      metaobjectResponseJson!.data!.metaobjectUpsert!.metaobject,
+interface LoaderData {
+  shop: string;
+  plan: PlanKey;
+  status: string;
+  onTrial: boolean;
+  trialDaysRemaining: number;
+  trialTryOnsUsed: number;
+  commissionGraceActive: boolean;
+  cycle: {
+    used: number;
+    cap: number;
+    pctUsed: number;
+    attributedOrders: number;
+    attributedRevenueUsd: number;
+    commissionAccruedUsd: number;
   };
+  recentTryOns: RecentTryOn[];
+  recentOrders: RecentOrder[];
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
+
+  await db.shop.upsert({
+    where: { domain: shop },
+    create: { domain: shop },
+    update: {},
+  });
+  const billing = await db.billingState.upsert({
+    where: { shop },
+    create: { shop },
+    update: {},
+  });
+  const settings = await db.merchantSettings.upsert({
+    where: { shop },
+    create: { shop },
+    update: {},
+  });
+
+  const plan: PlanKey = isPlanKey(billing.plan) ? billing.plan : "trial";
+  const cap = computeCap(plan, settings.capOverride ?? null);
+
+  const cycleStart =
+    billing.currentCycleStart ?? billing.trialStartedAt ?? new Date(0);
+  const used = await db.usageLog.count({ where: { shop, cycleStart } });
+
+  const ordersAgg = await db.attributedOrder.aggregate({
+    _sum: { subtotalUsd: true, commissionUsd: true },
+    _count: { _all: true },
+    where: { shop, createdAt: { gte: cycleStart }, refundedAt: null },
+  });
+
+  const trialAgeDays = Math.floor(
+    (Date.now() - billing.trialStartedAt.getTime()) / 86_400_000,
+  );
+  const trialTryOnsUsed =
+    plan === "trial"
+      ? await db.usageLog.count({
+          where: { shop, createdAt: { gte: billing.trialStartedAt } },
+        })
+      : 0;
+
+  const [recentTryOnsRaw, recentOrdersRaw] = await Promise.all([
+    db.usageLog.findMany({
+      where: { shop },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: {
+        id: true,
+        createdAt: true,
+        status: true,
+        size: true,
+        costUsd: true,
+      },
+    }),
+    db.attributedOrder.findMany({
+      where: { shop },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: {
+        id: true,
+        orderId: true,
+        createdAt: true,
+        subtotalUsd: true,
+        commissionUsd: true,
+        refundedAt: true,
+      },
+    }),
+  ]);
+
+  const commissionGraceEndsAt = billing.paidPlanStartedAt
+    ? new Date(
+        billing.paidPlanStartedAt.getTime() +
+          COMMISSION_GRACE_DAYS * 86_400_000,
+      )
+    : null;
+
+  const data: LoaderData = {
+    shop,
+    plan,
+    status: billing.status,
+    onTrial: plan === "trial",
+    trialDaysRemaining: Math.max(0, TRIAL_DAYS - trialAgeDays),
+    trialTryOnsUsed,
+    commissionGraceActive:
+      !!commissionGraceEndsAt && commissionGraceEndsAt > new Date(),
+    cycle: {
+      used,
+      cap,
+      pctUsed: cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0,
+      attributedOrders: ordersAgg._count._all,
+      attributedRevenueUsd: round2(Number(ordersAgg._sum.subtotalUsd ?? 0)),
+      commissionAccruedUsd: round2(Number(ordersAgg._sum.commissionUsd ?? 0)),
+    },
+    recentTryOns: recentTryOnsRaw.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt.toISOString(),
+      status: r.status,
+      size: r.size,
+      costUsd: round2(r.costUsd),
+    })),
+    recentOrders: recentOrdersRaw.map((o) => ({
+      id: o.id,
+      orderId: o.orderId,
+      createdAt: o.createdAt.toISOString(),
+      subtotalUsd: round2(o.subtotalUsd),
+      commissionUsd: round2(o.commissionUsd),
+      refunded: !!o.refundedAt,
+    })),
+  };
+  return data;
 };
 
 export default function Index() {
-  const fetcher = useFetcher<typeof action>();
+  const data = useLoaderData<typeof loader>() as LoaderData;
 
-  const shopify = useAppBridge();
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
-
-  useEffect(() => {
-    if (fetcher.data?.product?.id) {
-      shopify.toast.show("Product created");
-    }
-  }, [fetcher.data?.product?.id, shopify]);
-
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  const capTone: "critical" | "warning" | null =
+    data.cycle.pctUsed >= 100
+      ? "critical"
+      : data.cycle.pctUsed >= 80
+        ? "warning"
+        : null;
 
   return (
-    <s-page heading="Shopify app template">
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
-      </s-button>
+    <s-page heading="TryOnAI">
+      {data.onTrial && (
+        <s-banner tone="info" heading="You're on the Trial">
+          {data.trialDaysRemaining} day
+          {data.trialDaysRemaining === 1 ? "" : "s"} remaining ·{" "}
+          {data.trialTryOnsUsed}/{TRIAL_TRYONS} try-ons used.{" "}
+          <s-link href="/app/billing">Choose a plan</s-link>
+        </s-banner>
+      )}
 
-      <s-section heading="Congrats on creating a new Shopify app 🎉">
-        <s-paragraph>
-          This embedded app template uses{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/tools/app-bridge"
-            target="_blank"
-          >
-            App Bridge
-          </s-link>{" "}
-          interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
-          , as well as an{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            Admin GraphQL
-          </s-link>{" "}
-          mutation demo, to provide a starting point for app development.
-        </s-paragraph>
-      </s-section>
-      <s-section heading="Get started with products">
-        <s-paragraph>
-          Generate a product with GraphQL and get the JSON output for that
-          product. Learn more about the{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-            target="_blank"
-          >
-            productCreate
-          </s-link>{" "}
-          mutation in our API references. Includes a product{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metafields"
-            target="_blank"
-          >
-            metafield
-          </s-link>{" "}
-          and{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metaobjects"
-            target="_blank"
-          >
-            metaobject
-          </s-link>
-          .
-        </s-paragraph>
+      {capTone && (
+        <s-banner
+          tone={capTone}
+          heading={
+            capTone === "critical" ? "Try-on cap reached" : "Approaching cap"
+          }
+        >
+          {capTone === "critical"
+            ? "You've reached your monthly try-on cap. Upgrade your plan to keep generating."
+            : `You've used ${data.cycle.pctUsed}% of your monthly try-on allowance.`}
+        </s-banner>
+      )}
+
+      <s-section heading="This billing cycle">
         <s-stack direction="inline" gap="base">
-          <s-button
-            onClick={generateProduct}
-            {...(isLoading ? { loading: true } : {})}
-          >
-            Generate a product
-          </s-button>
-          {fetcher.data?.product && (
-            <s-button
-              onClick={() => {
-                shopify.intents.invoke?.("edit:shopify/Product", {
-                  value: fetcher.data?.product?.id,
-                });
-              }}
-              target="_blank"
-              variant="tertiary"
-            >
-              Edit product
-            </s-button>
-          )}
+          <StatCard
+            label="Try-ons used"
+            value={`${data.cycle.used} / ${data.cycle.cap}`}
+            sub={`${data.cycle.pctUsed}% of cap`}
+          />
+          <StatCard
+            label="Attributed orders"
+            value={String(data.cycle.attributedOrders)}
+          />
+          <StatCard
+            label="Attributed revenue"
+            value={`$${data.cycle.attributedRevenueUsd.toFixed(2)}`}
+          />
+          <StatCard
+            label="Commission accrued"
+            value={`$${data.cycle.commissionAccruedUsd.toFixed(2)}`}
+            sub={
+              data.commissionGraceActive
+                ? "Grace period — not charged"
+                : undefined
+            }
+          />
         </s-stack>
-        {fetcher.data?.product && (
-          <s-section heading="productCreate mutation">
-            <s-stack direction="block" gap="base">
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.product, null, 2)}</code>
-                </pre>
-              </s-box>
+      </s-section>
 
-              <s-heading>productVariantsBulkUpdate mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.variant, null, 2)}</code>
-                </pre>
-              </s-box>
-
-              <s-heading>metaobjectUpsert mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>
-                    {JSON.stringify(fetcher.data.metaobject, null, 2)}
-                  </code>
-                </pre>
-              </s-box>
-            </s-stack>
-          </s-section>
+      <s-section heading="Recent try-ons">
+        {data.recentTryOns.length === 0 ? (
+          <s-paragraph>
+            No try-ons yet. Once a shopper taps the Try-On button on your
+            storefront, the requests will appear here.
+          </s-paragraph>
+        ) : (
+          <s-stack direction="block" gap="small">
+            {data.recentTryOns.map((r) => (
+              <Row
+                key={r.id}
+                left={new Date(r.createdAt).toLocaleString()}
+                mid={`${r.size} · ${r.status}`}
+                right={`$${r.costUsd.toFixed(4)}`}
+              />
+            ))}
+          </s-stack>
         )}
       </s-section>
 
-      <s-section slot="aside" heading="App template specs">
-        <s-paragraph>
-          <s-text>Framework: </s-text>
-          <s-link href="https://reactrouter.com/" target="_blank">
-            React Router
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Interface: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/app-home/using-polaris-components"
-            target="_blank"
-          >
-            Polaris web components
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>API: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            GraphQL
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Custom data: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data"
-            target="_blank"
-          >
-            Metafields &amp; metaobjects
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Database: </s-text>
-          <s-link href="https://www.prisma.io/" target="_blank">
-            Prisma
-          </s-link>
-        </s-paragraph>
+      <s-section heading="Recent attributed orders">
+        {data.recentOrders.length === 0 ? (
+          <s-paragraph>
+            No attributed orders yet. Orders placed by a shopper after a try-on
+            will show here.
+          </s-paragraph>
+        ) : (
+          <s-stack direction="block" gap="small">
+            {data.recentOrders.map((o) => (
+              <Row
+                key={o.id}
+                left={new Date(o.createdAt).toLocaleDateString()}
+                mid={`Order ${o.orderId}${o.refunded ? " · refunded" : ""}`}
+                right={`$${o.subtotalUsd.toFixed(2)} · commission $${o.commissionUsd.toFixed(2)}`}
+              />
+            ))}
+          </s-stack>
+        )}
       </s-section>
 
-      <s-section slot="aside" heading="Next steps">
+      <s-section slot="aside" heading="Plan">
+        <s-paragraph>
+          {PLAN_DISPLAY[data.plan]} · {data.status}
+        </s-paragraph>
+        <s-paragraph>
+          {PLANS[data.plan].included.toLocaleString()} try-ons / month included
+        </s-paragraph>
+        <s-link href="/app/billing">Manage plan</s-link>
+      </s-section>
+
+      <s-section slot="aside" heading="Get started">
         <s-unordered-list>
           <s-list-item>
-            Build an{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/getting-started/build-app-example"
-              target="_blank"
-            >
-              example app
-            </s-link>
+            <s-link href="/app/billing">Pick a paid plan</s-link>
           </s-list-item>
           <s-list-item>
-            Explore Shopify&apos;s API with{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-              target="_blank"
-            >
-              GraphiQL
-            </s-link>
+            Add the Try-On theme app block to your product pages.
+          </s-list-item>
+          <s-list-item>
+            Run a test try-on from a product page on your storefront.
           </s-list-item>
         </s-unordered-list>
       </s-section>
+
+      <s-section slot="aside" heading="Support">
+        <s-paragraph>
+          Questions or issues? Email{" "}
+          <s-link href="mailto:support@tryonai.app">support@tryonai.app</s-link>
+          .
+        </s-paragraph>
+      </s-section>
     </s-page>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+}) {
+  return (
+    <s-box
+      padding="base"
+      borderWidth="base"
+      borderRadius="base"
+      background="subdued"
+    >
+      <s-stack direction="block" gap="small">
+        <s-text>{label}</s-text>
+        <s-heading>{value}</s-heading>
+        {sub ? <s-text>{sub}</s-text> : null}
+      </s-stack>
+    </s-box>
+  );
+}
+
+function Row({
+  left,
+  mid,
+  right,
+}: {
+  left: string;
+  mid: string;
+  right: string;
+}) {
+  return (
+    <s-box padding="small-200" borderWidth="base" borderRadius="base">
+      <s-stack direction="inline" gap="base">
+        <s-text>{left}</s-text>
+        <s-text>{mid}</s-text>
+        <s-text>{right}</s-text>
+      </s-stack>
+    </s-box>
   );
 }
 
