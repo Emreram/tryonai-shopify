@@ -2,7 +2,7 @@
 
 client_id = "9a1c0279c19616291bb601d0c83f6d2d"
 name = "tryonaishopfy"
-application_url = "https://example.com"
+application_url = "https://tryonai-shopify.vercel.app"
 embedded = true
 
 [build]
@@ -43,7 +43,7 @@ api_version = "2026-07"
   shop_deletion_url = "/webhooks/shop/redact"
 
 [app_proxy]
-url = "https://example.com/proxy"
+url = "https://tryonai-shopify.vercel.app/proxy"
 subpath = "tryonai"
 prefix = "apps"
 
@@ -52,7 +52,7 @@ prefix = "apps"
 scopes = "write_metaobject_definitions,write_metaobjects,write_products,read_orders,write_orders"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://tryonai-shopify.vercel.app/auth/callback" ]
 
 [product.metafields.app.demo_info]
 type = "single_line_text_field"
