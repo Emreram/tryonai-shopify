@@ -92,7 +92,7 @@ export default function Privacy() {
 
       <h2>Contact</h2>
       <p>
-        Privacy questions: <a href="mailto:privacy@tryonai.app">privacy@tryonai.app</a>
+        Privacy questions: <a href="mailto:emergenceit1@gmail.com">emergenceit1@gmail.com</a>
       </p>
     </main>
   );

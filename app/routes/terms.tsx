@@ -96,7 +96,7 @@ export default function Terms() {
 
       <h2>10. Contact</h2>
       <p>
-        Questions: <a href="mailto:support@tryonai.app">support@tryonai.app</a>
+        Questions: <a href="mailto:emergenceit1@gmail.com">emergenceit1@gmail.com</a>
       </p>
     </main>
   );

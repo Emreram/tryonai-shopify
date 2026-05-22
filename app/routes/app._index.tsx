@@ -298,7 +298,7 @@ export default function Index() {
       <s-section slot="aside" heading="Support">
         <s-paragraph>
           Questions or issues? Email{" "}
-          <s-link href="mailto:support@tryonai.app">support@tryonai.app</s-link>
+          <s-link href="mailto:emergenceit1@gmail.com">emergenceit1@gmail.com</s-link>
           .
         </s-paragraph>
       </s-section>
