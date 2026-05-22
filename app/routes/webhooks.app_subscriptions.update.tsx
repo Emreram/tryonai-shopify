@@ -7,7 +7,7 @@ import {
   PLANS,
   computeCap,
   planFromName,
-} from "../lib/plans.server";
+} from "../lib/plans";
 
 interface AppSubscriptionLineItem {
   id?: string;

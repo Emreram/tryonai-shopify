@@ -5,7 +5,7 @@ import {
   COMMISSION_GRACE_DAYS,
   PLANS,
   isPlanKey,
-} from "../lib/plans.server";
+} from "../lib/plans";
 
 interface NoteAttribute {
   name?: string;

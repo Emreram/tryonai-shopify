@@ -13,7 +13,7 @@ import {
   computeCap,
   isPlanKey,
   type PlanKey,
-} from "../lib/plans.server";
+} from "../lib/plans";
 
 interface CycleStats {
   used: number;

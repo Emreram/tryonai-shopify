@@ -13,7 +13,7 @@ import {
   isPlanKey,
   requestId,
   type PlanKey,
-} from "../lib/plans.server";
+} from "../lib/plans";
 
 type BlockReason = "trial_expired" | "cap_reached" | "cost_ceiling";
 
