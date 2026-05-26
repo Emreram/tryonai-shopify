@@ -4,6 +4,7 @@ export default function App() {
   return (
     <html lang="en">
       <head>
+        <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
         <link rel="preconnect" href="https://cdn.shopify.com/" />

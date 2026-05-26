@@ -13,7 +13,7 @@ api_version = "2026-07"
 
 # Subscriptions registered on `shopify app deploy`. The `shopify app dev --use-localhost`
 # workflow skips registration (it rejects non-public webhook URIs), so leaving these enabled
-# in source does not affect local dev — the existing Cloudflare-tunnel-blocked workaround
+# in source does not affect local dev - the existing Cloudflare-tunnel-blocked workaround
 # still works. Re-test webhook delivery against a real tunnel before App Store submission.
 
   [[webhooks.subscriptions]]
@@ -28,19 +28,15 @@ api_version = "2026-07"
   topics = [ "app_subscriptions/update" ]
   uri = "/webhooks/app_subscriptions/update"
 
-  # orders/paid and refunds/create are commented out until Shopify approves
-  # "Protected Customer Data" access for this app. Request approval in Partner
-  # Dashboard → App → API access. Re-enable once approved; Chapter 4
-  # (commission attribution) needs these.
-  #
-  # [[webhooks.subscriptions]]
-  # topics = [ "orders/paid" ]
-  # uri = "/webhooks/orders/paid"
-  # include_fields = [ "id", "name", "subtotal_price_set", "note_attributes", "financial_status", "test" ]
-  #
-  # [[webhooks.subscriptions]]
-  # topics = [ "refunds/create" ]
-  # uri = "/webhooks/refunds/create"
+  # Commission billing requires Protected Customer Data approval for read_orders.
+  [[webhooks.subscriptions]]
+  topics = [ "orders/paid" ]
+  uri = "/webhooks/orders/paid"
+  include_fields = [ "id", "name", "subtotal_price_set", "note_attributes", "financial_status", "test" ]
+
+  [[webhooks.subscriptions]]
+  topics = [ "refunds/create" ]
+  uri = "/webhooks/refunds/create"
 
   [webhooks.privacy_compliance]
   customer_data_request_url = "/webhooks/customers/data_request"
@@ -54,9 +50,8 @@ prefix = "apps"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-# read_orders + write_orders removed until Shopify approves Protected Customer Data
-# access. Re-add together with the orders/paid + refunds/create webhook subscriptions.
-scopes = "write_metaobject_definitions,write_metaobjects,write_products"
+# read_orders requires Protected Customer Data approval before deploy/submission.
+scopes = "read_orders,write_metaobject_definitions,write_metaobjects,write_products"
 
 [auth]
 redirect_urls = [ "https://tryonai-app.vercel.app/auth/callback" ]

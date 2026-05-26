@@ -20,9 +20,9 @@ Direct Gmail (no custom domain). Simpler than provisioning `support@tryonai.app`
 |-------|------|--------|
 | App icon | 1200x1200 PNG, no transparency, <=1 MB | READY: `../../pics/icon_1200x1200_p8.png` (341 KB, PNG-8; original `icon_1200x1200.png` is 1.30 MB and exceeds Shopify's 1 MB cap) |
 | Feature image | 1600x900 PNG, <=1 MB, no Shopify logo | READY: `../../pics/feature_1600x900_final.png` (373 KB, 256-color, Shopify badge painted over). Original `feature_1600x900.png` (1.34 MB) contains the "shopify app" badge bottom-left and must NOT be uploaded. |
-| Screenshot 1 | 1600x900 PNG, storefront try-on widget open | TODO: capture from `tryonaidev.myshopify.com` |
-| Screenshot 2 | 1600x900 PNG, embedded admin dashboard | TODO: capture from `tryonaidev.myshopify.com` |
-| Screenshot 3 | 1600x900 PNG, generated before/after result | TODO: capture from `tryonaidev.myshopify.com` |
+| Screenshot 1 | 1600x900 PNG, storefront try-on widget open | READY: `../../pics/screenshot1_widget_open.png` (181 KB) |
+| Screenshot 2 | 1600x900 PNG, embedded admin dashboard | READY: `../../pics/screenshot2_admin.png` (212 KB) |
+| Screenshot 3 | 1600x900 PNG, generated before/after result | READY: `../../pics/screenshot3_result.png` (224 KB) |
 | Short description | <= 100 chars | READY: see copy below |
 | Long description | 500-4000 chars; mention OpenAI sub-processor | READY: see copy below |
 | Primary category | Conversion -> Try-on | TODO: choose exact dashboard category containing `Try-on` |

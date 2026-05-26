@@ -17,7 +17,6 @@
   }
 
   function initRoot(root) {
-    const appUrl = (root.dataset.appUrl || "").replace(/\/$/, "");
     const productHandle = root.dataset.productHandle || "";
     const productTitle = root.dataset.productTitle || "";
     const fallbackVariantId = root.dataset.productVariantId || "";
@@ -245,7 +244,11 @@
         dragging = true;
         compare.classList.remove("is-wiping");
         compare.classList.add("is-dragging");
-        try { compare.setPointerCapture(e.pointerId); } catch (_) {}
+        try {
+          compare.setPointerCapture(e.pointerId);
+        } catch (_) {
+          // Pointer capture is best-effort; older embedded browsers can reject it.
+        }
         schedule(e.clientX);
         e.preventDefault();
       };
@@ -259,7 +262,11 @@
         if (!dragging) return;
         dragging = false;
         compare.classList.remove("is-dragging");
-        try { compare.releasePointerCapture(e.pointerId); } catch (_) {}
+        try {
+          compare.releasePointerCapture(e.pointerId);
+        } catch (_) {
+          // Pointer capture is best-effort; it may already be released.
+        }
       };
 
       compare.addEventListener("pointerdown", onDown);
@@ -393,7 +400,11 @@
         if (!confirm("Cancel the try-on?")) return;
         state.generating = false;
         if (state.abortController) {
-          try { state.abortController.abort(); } catch (_) {}
+          try {
+            state.abortController.abort();
+          } catch (_) {
+            // Abort is best-effort; the request may already be settled.
+          }
           state.abortController = null;
         }
       }
@@ -402,7 +413,11 @@
       setStage("idle");
       unlockBodyScroll();
       if (state.lastFocus && typeof state.lastFocus.focus === "function") {
-        try { state.lastFocus.focus(); } catch (_) {}
+        try {
+          state.lastFocus.focus();
+        } catch (_) {
+          // Restoring focus is best-effort after the modal closes.
+        }
       }
     }
 
@@ -545,10 +560,6 @@
     }
 
     async function run() {
-      if (!appUrl) {
-        showError("App URL not configured. Set it in the theme block settings.");
-        return;
-      }
       const garmentFile = activeGarment();
       if (!state.selfieFile || !garmentFile) return;
 

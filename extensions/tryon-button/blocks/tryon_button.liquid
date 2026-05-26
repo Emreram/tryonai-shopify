@@ -12,7 +12,6 @@
 <div
   class="tryonai-root"
   data-stage="idle"
-  data-app-url="{{ block.settings.app_url }}"
   data-product-handle="{{ product.handle }}"
   data-product-title="{{ product.title | escape }}"
   data-product-image-url="{% if tryon_product_image %}{{ tryon_product_image | image_url: width: 1024 }}{% endif %}"
@@ -64,7 +63,7 @@
                   </svg>
                 </span>
                 <span class="tryonai-drop__cta">Add your photo</span>
-                <img class="tryonai-drop__preview" alt="" hidden />
+                <img class="tryonai-drop__preview" alt="" width="400" height="220" hidden />
                 <button type="button" class="tryonai-drop__clear" data-action="clear-selfie" aria-label="Remove photo" hidden>
                   <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg>
                 </button>
@@ -75,7 +74,7 @@
               <span class="tryonai-card__label">The garment</span>
               <div class="tryonai-item" data-detected="false">
                 <div class="tryonai-item__thumb">
-                  <img class="tryonai-item__image" alt="" />
+                  <img class="tryonai-item__image" alt="" width="110" height="138" />
                   <span class="tryonai-item__placeholder">
                     <span class="tryonai-item__placeholder-dot" aria-hidden="true"></span>
                     <span>Detecting</span>
@@ -97,7 +96,7 @@
                 <path d="M1.5 6.2l4 4L14.5 1.5"/>
               </svg>
             </span>
-            <span class="tryonai-consent-text">I agree to processing my photo for try-on. Your photo is private and deleted after 7 days.</span>
+            <span class="tryonai-consent-text">I agree to processing my photo for this try-on. Your photo is sent to OpenAI for generation and is not stored by this app.</span>
           </label>
 
           <p class="tryonai-error" role="alert" hidden></p>
@@ -106,8 +105,8 @@
         <!-- STAGE: GENERATING -->
         <section class="tryonai-stage tryonai-stage--generating" aria-hidden="true">
           <div class="tryonai-loom">
-            <img class="tryonai-loom__selfie" alt="" />
-            <img class="tryonai-loom__garment" alt="" />
+            <img class="tryonai-loom__selfie" alt="" width="280" height="420" />
+            <img class="tryonai-loom__garment" alt="" width="280" height="420" />
             <span class="tryonai-loom__sweep" aria-hidden="true"></span>
             <div class="tryonai-loom__veil"></div>
           </div>
@@ -127,8 +126,8 @@
         <!-- STAGE: REVEAL -->
         <section class="tryonai-stage tryonai-stage--reveal" aria-hidden="true">
           <div class="tryonai-compare" style="--tryonai-split: 100%;">
-            <img class="tryonai-compare__before" alt="Your photo" />
-            <img class="tryonai-compare__after" alt="Try-on result" />
+            <img class="tryonai-compare__before" alt="Your photo" width="600" height="900" />
+            <img class="tryonai-compare__after" alt="Try-on result" width="600" height="900" />
             <span class="tryonai-compare__tag tryonai-compare__tag--before" aria-hidden="true">Before</span>
             <span class="tryonai-compare__tag tryonai-compare__tag--after" aria-hidden="true">After</span>
             <input
@@ -212,12 +211,6 @@
       "id": "accent_color",
       "label": "Accent color",
       "default": "#a8341a"
-    },
-    {
-      "type": "text",
-      "id": "app_url",
-      "label": "App URL (dev tunnel or production)",
-      "info": "Phase 1: paste the URL from `shopify app dev` output. Replaced by App Proxy in Phase 2."
     }
   ]
 }

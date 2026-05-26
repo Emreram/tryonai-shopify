@@ -40,6 +40,7 @@ interface LoaderData {
   trialDaysRemaining: number;
   trialTryOnsUsed: number;
   commissionGraceActive: boolean;
+  themeEditorUrl: string;
   cycle: {
     used: number;
     cap: number;
@@ -51,6 +52,9 @@ interface LoaderData {
   recentTryOns: RecentTryOn[];
   recentOrders: RecentOrder[];
 }
+
+const TRYON_EXTENSION_UID = "53b5dfb4-3bb4-0954-72aa-7e751170befc5b13a1dd";
+const TRYON_EXTENSION_HANDLE = "tryon-button";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -134,6 +138,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       )
     : null;
 
+  const themeEditorUrl = `https://${shop}/admin/themes/current/editor?context=apps&template=product&activateAppId=${TRYON_EXTENSION_UID}/${TRYON_EXTENSION_HANDLE}`;
+
   const data: LoaderData = {
     shop,
     plan,
@@ -143,6 +149,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     trialTryOnsUsed,
     commissionGraceActive:
       !!commissionGraceEndsAt && commissionGraceEndsAt > new Date(),
+    themeEditorUrl,
     cycle: {
       used,
       cap,
@@ -204,6 +211,53 @@ export default function Index() {
         </s-banner>
       )}
 
+      {data.recentTryOns.length === 0 && (
+        <s-section heading="Set up the Try-On button">
+          <s-paragraph>
+            Follow these four steps to get the AI Try-On button live on your
+            storefront. The first successful try-on will replace this guide with
+            usage stats.
+          </s-paragraph>
+          <ol style={{ paddingLeft: "1.25rem", marginTop: "0.75rem" }}>
+            <li style={{ marginBottom: "0.75rem" }}>
+              <strong>Add the Try-On block to your theme.</strong> Open your
+              active theme in the editor, navigate to a product template, drag
+              the <em>AI Try-On Button</em> app block into the section where
+              you want it to appear (most stores place it directly under the
+              Add to Cart button), then click <strong>Save</strong>.
+              <div style={{ marginTop: "0.5rem" }}>
+                <s-button
+                  variant="primary"
+                  href={data.themeEditorUrl}
+                  target="_top"
+                >
+                  Open theme editor
+                </s-button>
+              </div>
+            </li>
+            <li style={{ marginBottom: "0.75rem" }}>
+              <strong>Verify the block is live on a product page.</strong> Open
+              any product page on your storefront in a new tab — you should see
+              the &ldquo;Try it on&rdquo; button rendered where you added the
+              block.
+            </li>
+            <li style={{ marginBottom: "0.75rem" }}>
+              <strong>Run a test try-on.</strong> Click the button on your
+              storefront, upload a selfie, confirm the consent checkbox, and
+              wait ~15 seconds for the try-on to render. The result will appear
+              in the <em>Recent try-ons</em> list on this page.
+            </li>
+            <li>
+              <strong>Pick a paid plan when you&apos;re ready.</strong> The
+              trial covers {TRIAL_TRYONS} try-ons over {TRIAL_DAYS} days.
+              Upgrade from the{" "}
+              <s-link href="/app/billing">Billing tab</s-link> before either
+              limit is reached to keep generating.
+            </li>
+          </ol>
+        </s-section>
+      )}
+
       <s-section heading="This billing cycle">
         <s-stack direction="inline" gap="base">
           <StatCard
@@ -231,7 +285,13 @@ export default function Index() {
         </s-stack>
       </s-section>
 
-      <s-section heading="Recent try-ons">
+      <s-section accessibilityLabel="Recent try-ons">
+        <s-stack direction="inline" gap="base">
+          <s-heading>Recent try-ons</s-heading>
+          <s-button href="/app/export/usage" download="">
+            Download CSV
+          </s-button>
+        </s-stack>
         {data.recentTryOns.length === 0 ? (
           <s-paragraph>
             No try-ons yet. Once a shopper taps the Try-On button on your
@@ -251,7 +311,13 @@ export default function Index() {
         )}
       </s-section>
 
-      <s-section heading="Recent attributed orders">
+      <s-section accessibilityLabel="Recent attributed orders">
+        <s-stack direction="inline" gap="base">
+          <s-heading>Recent attributed orders</s-heading>
+          <s-button href="/app/export/orders" download="">
+            Download CSV
+          </s-button>
+        </s-stack>
         {data.recentOrders.length === 0 ? (
           <s-paragraph>
             No attributed orders yet. Orders placed by a shopper after a try-on
@@ -287,7 +353,9 @@ export default function Index() {
             <s-link href="/app/billing">Pick a paid plan</s-link>
           </s-list-item>
           <s-list-item>
-            Add the Try-On theme app block to your product pages.
+            <s-link href={data.themeEditorUrl} target="_top">
+              Open theme editor and add the Try-On block
+            </s-link>
           </s-list-item>
           <s-list-item>
             Run a test try-on from a product page on your storefront.

@@ -17,6 +17,7 @@ import {
 
 interface CycleStats {
   used: number;
+  included: number;
   cap: number;
   pctUsed: number;
   commissionAccruedUsd: number;
@@ -34,6 +35,7 @@ interface LoaderData {
   commissionGraceEndsAt: string | null;
   cycle: CycleStats;
   confirmed: boolean;
+  declined: boolean;
   errorMessage: string | null;
 }
 
@@ -42,8 +44,73 @@ function appUrl(): string {
   return raw.replace(/\/$/, "");
 }
 
+interface ActiveSubscription {
+  id: string;
+  name: string;
+  status: string;
+}
+
+// Reconciles BillingState.status against ground truth in Shopify. Called only
+// when the merchant has just returned from the approval page (?confirmed=1).
+// Shopify redirects to returnUrl regardless of accept/decline, so we have to
+// ask Shopify which one happened. Returns the outcome so the loader can pick
+// the right banner without re-querying.
+async function reconcileSubscription(
+  admin: Awaited<ReturnType<typeof authenticate.admin>>["admin"],
+  shop: string,
+): Promise<"active" | "declined" | "indeterminate"> {
+  let active: ActiveSubscription[] = [];
+  try {
+    const resp = await admin.graphql(
+      `#graphql
+        query TryonaiCurrentAppSubscriptions {
+          currentAppInstallation {
+            activeSubscriptions { id name status }
+          }
+        }`,
+    );
+    const json = await resp.json();
+    active =
+      (json?.data?.currentAppInstallation?.activeSubscriptions as
+        | ActiveSubscription[]
+        | undefined) ?? [];
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        event: "reconcileSubscription_query_failed",
+        shop,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+    return "indeterminate";
+  }
+
+  const liveActive = active.find((s) => s.status?.toUpperCase() === "ACTIVE");
+  if (liveActive) {
+    await db.billingState.update({
+      where: { shop },
+      data: { status: "active", subscriptionId: liveActive.id },
+    });
+    return "active";
+  }
+
+  // No active subscription found — if we were mid-flight (status="pending"),
+  // the merchant declined or the approval timed out. Move to "declined" so the
+  // UI surfaces it; the app_subscriptions/update webhook will overwrite this
+  // once Shopify catches up if the merchant actually approved.
+  const current = await db.billingState.findUnique({ where: { shop } });
+  if (current?.status === "pending") {
+    await db.billingState.update({
+      where: { shop },
+      data: { status: "declined" },
+    });
+    return "declined";
+  }
+  return "indeterminate";
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
   await db.shop.upsert({
@@ -51,11 +118,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     create: { domain: shop },
     update: {},
   });
-  const billing = await db.billingState.upsert({
+  await db.billingState.upsert({
     where: { shop },
     create: { shop },
     update: {},
   });
+
+  const url = new URL(request.url);
+  const justConfirmed = url.searchParams.get("confirmed") === "1";
+  let reconcileOutcome: "active" | "declined" | "indeterminate" =
+    "indeterminate";
+  if (justConfirmed) {
+    reconcileOutcome = await reconcileSubscription(admin, shop);
+  }
+
+  // Re-read after reconcile so plan/status reflect the freshly-reconciled state.
+  const billing = await db.billingState.findUniqueOrThrow({ where: { shop } });
   const settings = await db.merchantSettings.upsert({
     where: { shop },
     create: { shop },
@@ -92,7 +170,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         })
       : 0;
 
-  const url = new URL(request.url);
   const data: LoaderData = {
     shop,
     plan,
@@ -109,12 +186,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       : null,
     cycle: {
       used,
+      included: planDef.included,
       cap,
       pctUsed: cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0,
       commissionAccruedUsd: round2(commissionAccrued),
       projectedNextBillUsd: round2(projectedNextBill),
     },
-    confirmed: url.searchParams.get("confirmed") === "1",
+    confirmed: justConfirmed && reconcileOutcome === "active",
+    declined: justConfirmed && reconcileOutcome === "declined",
     errorMessage: url.searchParams.get("error"),
   };
   return data;
@@ -252,6 +331,12 @@ export default function BillingPage() {
           Your plan is active. Usage will start counting toward your monthly allowance.
         </s-banner>
       )}
+      {data.declined && (
+        <s-banner tone="critical" heading="Subscription not started">
+          Shopify didn&apos;t record an active subscription for this app. If you
+          declined or closed the approval page, pick a plan below to try again.
+        </s-banner>
+      )}
       {data.errorMessage && (
         <s-banner tone="critical" heading="We couldn't start that plan">
           {decodeURIComponent(data.errorMessage)}
@@ -280,8 +365,8 @@ export default function BillingPage() {
           <s-stack direction="block" gap="base">
             <s-paragraph>
               <s-text>
-                Status: {data.status} · Try-ons this cycle: {data.cycle.used}/{data.cycle.cap}
-                {" "}({data.cycle.pctUsed}%)
+                Status: {data.status} · Try-ons this cycle: {data.cycle.used}/{data.cycle.included}
+                {" "}included (cap: {data.cycle.cap})
               </s-text>
             </s-paragraph>
             <s-paragraph>

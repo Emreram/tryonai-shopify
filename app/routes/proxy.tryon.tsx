@@ -6,7 +6,9 @@ import {
 } from "../lib/openai.server";
 import { verifyProxySignature } from "../lib/proxy.server";
 import db from "../db.server";
+import { unauthenticated } from "../shopify.server";
 import {
+  PLANS,
   TRIAL_DAYS,
   TRIAL_TRYONS,
   computeCap,
@@ -360,7 +362,7 @@ export async function action({ request }: ActionFunctionArgs) {
                 t.tCompleted !== null
                   ? Math.round(t.tCompleted - t.tOpenaiStart)
                   : null;
-              await db.usageLog.create({
+              const usageLog = await db.usageLog.create({
                 data: {
                   shop,
                   requestId: reqId,
@@ -375,6 +377,108 @@ export async function action({ request }: ActionFunctionArgs) {
                   cycleStart,
                 },
               });
+              const planDef = PLANS[plan];
+              const overageUsd = planDef.overage;
+              if (plan !== "trial" && overageUsd !== null) {
+                // `used` was captured before generation; concurrent requests can undercount overage by one.
+                const usedAfter = used + 1;
+                if (usedAfter > planDef.included && billing.overageLineItemId) {
+                  try {
+                    const { admin } = await unauthenticated.admin(shop);
+                    const resp = await admin.graphql(
+                      `#graphql
+                        mutation tryonaiOverageCharge(
+                          $id: ID!
+                          $price: MoneyInput!
+                          $description: String!
+                        ) {
+                          appUsageRecordCreate(
+                            subscriptionLineItemId: $id
+                            price: $price
+                            description: $description
+                          ) {
+                            appUsageRecord { id }
+                            userErrors { field message }
+                          }
+                        }`,
+                      {
+                        variables: {
+                          id: billing.overageLineItemId,
+                          price: {
+                            amount: overageUsd,
+                            currencyCode: "USD",
+                          },
+                          description: `Overage try-on (request ${reqId})`,
+                        },
+                      },
+                    );
+                    const result = await resp.json();
+                    const errors =
+                      result?.data?.appUsageRecordCreate?.userErrors;
+                    if (errors?.length) {
+                      console.error(
+                        JSON.stringify({
+                          event: "appUsageRecordCreate_overage_user_errors",
+                          shop,
+                          request_id: reqId,
+                          errors,
+                        }),
+                      );
+                    } else {
+                      const overageChargeId =
+                        result?.data?.appUsageRecordCreate?.appUsageRecord
+                          ?.id ?? null;
+                      if (overageChargeId) {
+                        await db.usageLog.update({
+                          where: { id: usageLog.id },
+                          data: {
+                            overageChargeId,
+                            overageUsd,
+                          },
+                        });
+                        console.log(
+                          JSON.stringify({
+                            event: "appUsageRecordCreate_overage_success",
+                            shop,
+                            request_id: reqId,
+                            amount: overageUsd,
+                            usageChargeId: overageChargeId,
+                          }),
+                        );
+                      } else {
+                        console.error(
+                          JSON.stringify({
+                            event: "appUsageRecordCreate_overage_no_record",
+                            shop,
+                            request_id: reqId,
+                          }),
+                        );
+                      }
+                    }
+                  } catch (err) {
+                    console.error(
+                      JSON.stringify({
+                        event: "appUsageRecordCreate_overage_threw",
+                        shop,
+                        request_id: reqId,
+                        error:
+                          err instanceof Error ? err.message : String(err),
+                      }),
+                    );
+                  }
+                } else if (
+                  usedAfter > planDef.included &&
+                  !billing.overageLineItemId
+                ) {
+                  console.warn(
+                    JSON.stringify({
+                      event: "overage_not_billed_no_line_item",
+                      shop,
+                      reqId,
+                    }),
+                  );
+                }
+              }
             } catch (logErr) {
               console.error(
                 JSON.stringify({

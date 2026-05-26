@@ -78,6 +78,40 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const plan = planFromName(sub.name);
   const status = (sub.status ?? "ACTIVE").toLowerCase();
   const isActive = status === "active";
+
+  // Mirror the uninstall reset: when Shopify reports a cancelled subscription
+  // (uninstall, merchant-initiated cancel, billing failure, etc.) clear the
+  // live billing fields so a reinstall or fresh subscription starts clean.
+  if (status === "cancelled" || status === "frozen" || status === "expired") {
+    await db.shop.upsert({
+      where: { domain: shop },
+      create: { domain: shop },
+      update: {},
+    });
+    await db.billingState.updateMany({
+      where: { shop },
+      data: {
+        plan: "trial",
+        status,
+        subscriptionId: null,
+        paidPlanStartedAt: null,
+        currentCycleStart: null,
+        currentCycleEnd: null,
+        overageLineItemId: null,
+        commissionLineItemId: null,
+      },
+    });
+    console.log(
+      JSON.stringify({
+        event: "subscription_webhook_cleared",
+        shop,
+        topic,
+        status,
+        subscriptionId: sub.admin_graphql_api_id,
+      }),
+    );
+    return new Response();
+  }
   const cycleEnd = sub.current_period_end ? new Date(sub.current_period_end) : null;
   const cycleStart =
     cycleEnd && !Number.isNaN(cycleEnd.getTime())

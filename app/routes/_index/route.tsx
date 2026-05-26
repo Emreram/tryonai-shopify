@@ -1,9 +1,23 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { redirect, Form, useLoaderData } from "react-router";
-
-import { login } from "../../shopify.server";
+import { redirect, useLoaderData } from "react-router";
 
 import styles from "./styles.module.css";
+
+// Only accept App Store listing URLs on the canonical apps.shopify.com host.
+// Anything else (typo, staging URL, accidental marketing redirect) is dropped
+// so the landing falls back to a no-link "install from the App Store" message
+// — reviewers must never see an "install" button that points off-Shopify.
+function parseAppStoreUrl(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "https:") return null;
+    if (u.host !== "apps.shopify.com") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
@@ -12,45 +26,47 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { showForm: Boolean(login) };
+  return { appStoreUrl: parseAppStoreUrl(process.env.APP_STORE_LISTING_URL) };
 };
 
-export default function App() {
-  const { showForm } = useLoaderData<typeof loader>();
+export default function Index() {
+  const { appStoreUrl } = useLoaderData<typeof loader>();
 
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>TryOn AI for Shopify</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          An AI-powered try-on widget for fashion storefronts. Shoppers upload a
+          selfie, pick a product, and see themselves wearing the item in
+          seconds.
         </p>
-        {showForm && (
-          <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label}>
-              <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
-            </label>
-            <button className={styles.button} type="submit">
-              Log in
-            </button>
-          </Form>
-        )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Lift conversion on PDPs.</strong> A familiar &ldquo;Try it
+            on&rdquo; button on every product page.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>No shopper data stored.</strong> Selfies are processed in
+            memory and never written to disk.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Pay only for what works.</strong> Per-try-on overages plus a
+            small commission on attributed orders &mdash; never on the try-on
+            itself.
           </li>
         </ul>
+        {appStoreUrl ? (
+          <p className={styles.text}>
+            <a className={styles.button} href={appStoreUrl}>
+              Install on Shopify
+            </a>
+          </p>
+        ) : (
+          <p className={styles.text}>
+            Install TryOn AI from the Shopify App Store to get started.
+          </p>
+        )}
       </div>
     </div>
   );

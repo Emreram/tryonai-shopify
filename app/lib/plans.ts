@@ -64,5 +64,5 @@ export const PLAN_DISCLOSURE_COPY = {
   attributedOnly:
     "Commission only applies to orders attributed to a try-on. We never charge on the try-on itself.",
   selfEnforcedCap:
-    "Your monthly try-on cap is enforced by the app to protect you from runaway charges.",
+    "Try-ons over your included allowance are billed at the per-try-on overage rate, up to a hard cap at 150% of included. Requests above the cap are blocked to prevent runaway charges.",
 };

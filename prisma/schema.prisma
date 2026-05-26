@@ -84,6 +84,8 @@ model UsageLog {
   inputTokens     Int?
   outputTokens   Int?
   openaiMs        Int?
+  overageChargeId String?
+  overageUsd      Float?
   status          String   @default("ok")
   size            String
   cycleStart      DateTime

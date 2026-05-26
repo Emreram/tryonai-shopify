@@ -128,6 +128,14 @@ When you're ready to set up your app in production, you can follow [our deployme
 
 When you reach the step for [setting up environment variables](https://shopify.dev/docs/apps/deployment/web#set-env-vars), you also need to set the variable `NODE_ENV=production`.
 
+### App Store submission checklist
+
+Before submitting for Shopify App Store review, set `APP_STORE_LISTING_URL` in
+the production environment (Vercel) to the canonical listing URL — e.g.
+`https://apps.shopify.com/tryonai`. The marketing landing at `/` validates this
+value and only renders the install CTA when the host is `apps.shopify.com`;
+anything else is ignored and the page falls back to a no-link install message.
+
 ## Gotchas / Troubleshooting
 
 ### Database tables don't exist
