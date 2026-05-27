@@ -9,3 +9,4 @@ Action items from Chapter 1 (Shopify App Store compliance) that **Claude cannot 
 | 3 | [`shopify app check` clarification](03-shopify-app-check-clarification.md) | INFO — read before submitting |
 | 4 | [Partner Dashboard listing + support email](04-partner-dashboard-deliverables.md) | TODO |
 | 5 | [Prisma generate retry (if dev server was running)](05-prisma-generate-retry.md) | Verify before next `npm run dev` |
+| 6 | Manual uninstall -> reinstall OAuth check on `tryonaidev` | TODO before App Store submission |

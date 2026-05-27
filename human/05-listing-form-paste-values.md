@@ -296,6 +296,7 @@ To test TryOnAI end-to-end:
 7. Test uninstall:
    - From the dev store admin, uninstall the app.
    - The /webhooks/app/uninstalled handler runs and cleans up merchant data.
+   - Reinstall from the listing. Shopify OAuth should run again, the admin should load without errors, trial usage should restart at 0/30, and the plan picker should work.
 
 Notes for the reviewer:
 - Required scopes are limited to read_orders. Order webhooks are used only to bill the merchant-approved 1.5% commission on orders attributed to a try-on request.

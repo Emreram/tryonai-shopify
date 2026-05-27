@@ -17,6 +17,7 @@ import {
 
 interface RecentTryOn {
   id: string;
+  requestId: string;
   createdAt: string;
   status: string;
   size: string;
@@ -110,6 +111,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       take: 10,
       select: {
         id: true,
+        requestId: true,
         createdAt: true,
         status: true,
         size: true,
@@ -160,6 +162,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
     recentTryOns: recentTryOnsRaw.map((r) => ({
       id: r.id,
+      requestId: r.requestId,
       createdAt: r.createdAt.toISOString(),
       status: r.status,
       size: r.size,
@@ -303,7 +306,7 @@ export default function Index() {
               <Row
                 key={r.id}
                 left={new Date(r.createdAt).toLocaleString()}
-                mid={`${r.size} · ${r.status}`}
+                mid={`${r.requestId} | ${r.size} | ${r.status}`}
                 right={`$${r.costUsd.toFixed(4)}`}
               />
             ))}
@@ -361,6 +364,20 @@ export default function Index() {
             Run a test try-on from a product page on your storefront.
           </s-list-item>
         </s-unordered-list>
+      </s-section>
+
+      <s-section slot="aside" heading="Data access">
+        <s-paragraph>
+          Merchants can review persisted try-on usage and attributed order
+          records in this dashboard or export them as CSV from the Recent
+          try-ons and Recent attributed orders sections.
+        </s-paragraph>
+        <s-paragraph>
+          Shopper photos and generated try-on images are processed only for the
+          live preview and are not stored by TryOnAI, so they are not included
+          in merchant exports.
+        </s-paragraph>
+        <s-link href="/privacy">Privacy policy</s-link>
       </s-section>
 
       <s-section slot="aside" heading="Support">
