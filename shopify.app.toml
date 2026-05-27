@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "9a1c0279c19616291bb601d0c83f6d2d"
-name = "tryonaishopfy"
+name = "TryOnAI"
 application_url = "https://tryonai-app.vercel.app"
 embedded = true
 
