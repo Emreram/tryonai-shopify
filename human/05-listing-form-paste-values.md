@@ -267,9 +267,9 @@ https://www.youtube.com/watch?v=YOUR_VIDEO_ID
 ```
 To test TryOnAI end-to-end:
 
-1. Install the app on a development store from the Shopify App Store listing. Installation completes via Shopify's managed install flow; no extra account or credentials are required.
+1. Install the app on a development store from the Shopify App Store listing. Installation uses Shopify's managed install flow; no extra account is required.
 
-2. After install you'll land on the embedded admin at /apps/tryonaishopfy. The home page shows the trial banner (14 days, 30 try-ons), billing cycle stats (Try-ons used, Attributed orders, Attributed revenue, Commission accrued), the current plan card, and a "Get started" checklist.
+2. After install you'll land on the embedded admin at /apps/tryonaishopfy. The home page shows trial, usage, billing, and setup status.
 
 3. Add the storefront widget:
    - Go to Online Store > Themes > Customize on the test store.
@@ -283,11 +283,10 @@ To test TryOnAI end-to-end:
    - Upload any portrait photo (a stock model photo is fine — no real shopper PII is needed).
    - Wait ~10-20 seconds for the AI to generate the preview. The garment for the current product is auto-selected.
    - The result shows a Before/After slider with the shopper photo on the left and the AI-generated try-on on the right.
-   - Test the action buttons: Save (downloads result), Share, Try again (re-generate), Add to cart (adds the product).
+   - Test Save, Share, Try again, and Add to cart.
 
 5. Verify usage tracking in admin:
-   - Return to the embedded admin home page.
-   - "Try-ons used" should show the new count and "Recent try-ons" should list a new entry with timestamp + resolution + status.
+   - Return to the embedded admin home page. "Try-ons used" and "Recent try-ons" should update.
 
 6. Test billing upgrade:
    - From the admin home, click "Choose a plan".
@@ -299,8 +298,8 @@ To test TryOnAI end-to-end:
    - The /webhooks/app/uninstalled handler runs and cleans up merchant data.
 
 Notes for the reviewer:
-- The app does NOT access Shopify Customer, Order, or any Protected Customer Data. Required scopes are limited to: write_metaobject_definitions, write_metaobjects, write_products.
-- Shopper photos are sent to OpenAI as the image-generation sub-processor and are not stored by TryOnAI. The privacy policy at /privacy discloses this.
+- Required scopes are limited to read_orders. Order webhooks are used only to bill the merchant-approved 1.5% commission on orders attributed to a try-on request.
+- Shopper photos are collected transiently for AI generation, sent to OpenAI, and not stored by TryOnAI. Merchants can access persisted usage metadata in the admin and CSV exports; images are zero-retention by design. The privacy policy at /privacy discloses this.
 - Mandatory GDPR compliance webhooks (customers/data_request, customers/redact, shop/redact) are implemented and verify HMAC signatures.
 - The app uses managed installation, so /auth/callback intentionally returns 410 Gone — this is expected behavior of @shopify/shopify-app-react-router for the AppStore distribution profile.
 ```
