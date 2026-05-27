@@ -96,6 +96,17 @@ model UsageLog {
   @@index([shop, status, cycleStart])
 }
 
+model RateLimitBucket {
+  key         String
+  tier        String
+  count       Int      @default(0)
+  windowStart DateTime @default(now())
+  expiresAt   DateTime
+
+  @@id([key, tier])
+  @@index([expiresAt])
+}
+
 model AttributedOrder {
   id                  String    @id @default(cuid())
   shop                String

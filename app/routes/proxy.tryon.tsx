@@ -5,6 +5,11 @@ import {
   OPENAI_TRYON_MODEL,
 } from "../lib/openai.server";
 import { verifyProxySignature } from "../lib/proxy.server";
+import {
+  buildKey as buildRateLimitKey,
+  checkAndIncrement as rateLimitCheck,
+  decrement as rateLimitDecrement,
+} from "../lib/rateLimit.server";
 import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import {
@@ -17,7 +22,11 @@ import {
   type PlanKey,
 } from "../lib/plans";
 
-type BlockReason = "trial_expired" | "cap_reached" | "cost_ceiling";
+type BlockReason =
+  | "trial_expired"
+  | "cap_reached"
+  | "cost_ceiling"
+  | "rate_limited";
 
 async function writeBlockedLog(args: {
   shop: string;
@@ -38,7 +47,7 @@ async function writeBlockedLog(args: {
         inputTokens: null,
         outputTokens: null,
         openaiMs: null,
-        status: "blocked",
+        status: args.reason,
         size: args.size,
         cycleStart: args.cycleStart,
       },
@@ -96,14 +105,64 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   let shop: string;
+  let customerId: string | null;
   try {
-    ({ shop } = verifyProxySignature(request));
+    ({ shop, customerId } = verifyProxySignature(request));
   } catch (err) {
     if (err instanceof Response) return err;
     return json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const tRequestReceived = performance.now();
+
+  const firstXff =
+    request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ?? null;
+  let rateLimitKey: string | null = null;
+  try {
+    rateLimitKey = buildRateLimitKey(shop, customerId, firstXff);
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        event: "rate_limit_unkeyable",
+        shop,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+    return json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const rateLimitVerdict = await rateLimitCheck(rateLimitKey);
+  if (!rateLimitVerdict.ok) {
+    const cycleStartForLog =
+      // Best-effort cycle reference for the blocked-log row; the real billing
+      // record is read further down for non-rate-limited paths.
+      new Date(0);
+    await writeBlockedLog({
+      shop,
+      reqId: requestId(),
+      plan: "trial",
+      size: "unknown",
+      cycleStart: cycleStartForLog,
+      reason: "rate_limited",
+    });
+    console.warn(
+      JSON.stringify({
+        event: "rate_limit_hit",
+        shop,
+        tier: rateLimitVerdict.tier,
+        retry_after: rateLimitVerdict.retryAfter,
+      }),
+    );
+    return json(
+      {
+        error: "rate_limited",
+        retryAfter: rateLimitVerdict.retryAfter,
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimitVerdict.retryAfter) },
+      },
+    );
+  }
 
   const billing = await db.billingState.findUnique({
     where: { shop },
@@ -259,6 +318,10 @@ export async function action({ request }: ActionFunctionArgs) {
   const encoder = new TextEncoder();
   const generationAbortController = new AbortController();
   let streamCancelled = false;
+  // Flips true once OpenAI completes (its "timing" event is the last frame).
+  // If the request aborts/errs before this, we refund the rate-limit bucket
+  // so a flaky-network shopper can't self-DOS via dropped SSE retries.
+  let openaiCompleted = false;
   const abortGeneration = () => {
     streamCancelled = true;
     generationAbortController.abort();
@@ -347,6 +410,7 @@ export async function action({ request }: ActionFunctionArgs) {
             };
             console.log(JSON.stringify(log));
             timingPayload = log;
+            openaiCompleted = true;
             send({ kind: "timing", ...log });
 
             try {
@@ -495,7 +559,15 @@ export async function action({ request }: ActionFunctionArgs) {
           }
         }
       } catch (err) {
-        if (streamCancelled || isAbortError(err)) return;
+        if (streamCancelled || isAbortError(err)) {
+          if (!openaiCompleted && rateLimitKey) {
+            await rateLimitDecrement(rateLimitKey);
+          }
+          return;
+        }
+        if (!openaiCompleted && rateLimitKey) {
+          await rateLimitDecrement(rateLimitKey);
+        }
         const msg = err instanceof Error ? err.message : "Unknown error";
         console.error(
           JSON.stringify({

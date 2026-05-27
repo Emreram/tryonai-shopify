@@ -642,10 +642,28 @@
         });
         if (!res.ok || !res.body) {
           let errMsg = "Generation failed";
+          let retryAfterSec = null;
           try {
             const j = await res.json();
             errMsg = j.error || errMsg;
+            if (typeof j.retryAfter === "number") retryAfterSec = j.retryAfter;
           } catch (_) { /* not JSON, keep default */ }
+          if (res.status === 429 || errMsg === "rate_limited") {
+            const header = res.headers.get("Retry-After");
+            if (retryAfterSec === null && header) {
+              const parsed = parseInt(header, 10);
+              if (Number.isFinite(parsed) && parsed > 0) retryAfterSec = parsed;
+            }
+            const waitHint =
+              retryAfterSec && retryAfterSec >= 60
+                ? `${Math.ceil(retryAfterSec / 60)} minutes`
+                : retryAfterSec
+                  ? `${retryAfterSec} seconds`
+                  : "a few minutes";
+            throw new Error(
+              `Too many try-ons in a short time. Please wait ${waitHint} and try again.`,
+            );
+          }
           throw new Error(errMsg);
         }
 

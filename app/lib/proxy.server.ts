@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 export interface ProxyAuthResult {
   shop: string;
+  customerId: string | null;
 }
 
 // Verifies a Shopify App Proxy request: HMAC-SHA256 over the sorted, joined
@@ -49,5 +50,8 @@ export function verifyProxySignature(request: Request): ProxyAuthResult {
   if (!shop || !/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(shop)) {
     throw new Response("missing or invalid shop", { status: 401 });
   }
-  return { shop };
+  const customerIdRaw = params.get("logged_in_customer_id");
+  const customerId =
+    customerIdRaw && customerIdRaw.length > 0 ? customerIdRaw : null;
+  return { shop, customerId };
 }
