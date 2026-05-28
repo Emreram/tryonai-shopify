@@ -51,9 +51,8 @@ export default function Index() {
             memory and never written to disk.
           </li>
           <li>
-            <strong>Pay only for what works.</strong> Per-try-on overages plus a
-            small commission on attributed orders &mdash; never on the try-on
-            itself.
+            <strong>Predictable Shopify billing.</strong> Monthly plans include
+            a usage allowance, with simple per-try-on overages after that.
           </li>
         </ul>
         {appStoreUrl ? (

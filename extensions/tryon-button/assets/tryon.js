@@ -951,28 +951,6 @@
           return;
         }
 
-        // Stamp the try-on request id onto the cart as an order-level
-        // attribute so the app's orders/paid webhook can attribute the
-        // resulting order back to this try-on for commission billing.
-        // Cart attributes survive checkout and appear in order.note_attributes;
-        // line-item properties (set below) do not.
-        if (state.requestId) {
-          try {
-            await fetch("/cart/update.js", {
-              method: "POST",
-              credentials: "same-origin",
-              headers: {
-                "Content-Type": "application/json",
-                Accept: "application/json",
-                "X-Requested-With": "XMLHttpRequest",
-              },
-              body: JSON.stringify({
-                attributes: { _tryonai_request_id: state.requestId },
-              }),
-            });
-          } catch (_) { /* best effort — do not block add-to-cart */ }
-        }
-
         const res = await fetch("/cart/add.js", {
           method: "POST",
           credentials: "same-origin",

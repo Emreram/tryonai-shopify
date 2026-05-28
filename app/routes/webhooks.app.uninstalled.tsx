@@ -1,4 +1,5 @@
 import type { ActionFunctionArgs } from "react-router";
+
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 
@@ -13,11 +14,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await db.session.deleteMany({ where: { shop } });
   }
 
-  // Reset BillingState so a reinstall inside the 48h shop/redact window starts
-  // fresh: no stale paidPlanStartedAt (commission grace clock would otherwise
-  // keep ticking) and no stale subscriptionId (Shopify auto-cancels app
-  // subscriptions on uninstall). Historical UsageLog / AttributedOrder rows
-  // are preserved for analytics — only the live billing state is reset.
+  // Reset live billing state so a reinstall inside the 48h shop/redact window
+  // starts fresh. Historical UsageLog rows are preserved for analytics.
   await db.billingState.updateMany({
     where: { shop },
     data: {
@@ -27,8 +25,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       paidPlanStartedAt: null,
       currentCycleStart: null,
       currentCycleEnd: null,
-      overageLineItemId: null,
-      commissionLineItemId: null,
       trialStartedAt: new Date(),
     },
   });

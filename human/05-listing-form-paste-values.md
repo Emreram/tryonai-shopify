@@ -124,7 +124,7 @@ https://tryonai-app.vercel.app
 
 ## Pricing details
 
-⚠️ **"I have approval to charge merchants outside of the Shopify Billing API":** leave **UNCHECKED** — the app uses Shopify's Billing API via `@shopify/shopify-app-react-router`.
+**"I have approval to charge merchants outside of Shopify billing":** leave **UNCHECKED** - the app uses Shopify App Pricing.
 
 Add **3 public plans** (data from [app/lib/plans.ts](tryonaishopfy/app/lib/plans.ts#L11-L16)):
 
@@ -134,7 +134,7 @@ Add **3 public plans** (data from [app/lib/plans.ts](tryonaishopfy/app/lib/plans
 - Trial: 14 days
 - Top features description:
 ```
-300 AI try-ons per month. $0.18 per extra try-on. 1.5% commission on attributed orders only. 14-day free trial.
+300 AI try-ons per month. $0.18 per extra try-on after the included allowance. 14-day free trial.
 ```
 
 **Plan 2 — Growth**
@@ -143,7 +143,7 @@ Add **3 public plans** (data from [app/lib/plans.ts](tryonaishopfy/app/lib/plans
 - Trial: 14 days
 - Top features description:
 ```
-1,200 AI try-ons per month. $0.15 per extra try-on. 1.5% commission on attributed orders only. 14-day free trial.
+1,200 AI try-ons per month. $0.15 per extra try-on after the included allowance. 14-day free trial.
 ```
 
 **Plan 3 — Scale**
@@ -152,7 +152,7 @@ Add **3 public plans** (data from [app/lib/plans.ts](tryonaishopfy/app/lib/plans
 - Trial: 14 days
 - Top features description:
 ```
-3,000 AI try-ons per month. $0.15 per extra try-on. 1.5% commission on attributed orders only. 14-day free trial.
+3,000 AI try-ons per month. $0.15 per extra try-on after the included allowance. 14-day free trial.
 ```
 
 **Pricing info URL (optional):** leave empty
@@ -299,7 +299,7 @@ To test TryOnAI end-to-end:
    - Reinstall from the listing. Shopify OAuth should run again, the admin should load without errors, trial usage should restart at 0/30, and the plan picker should work.
 
 Notes for the reviewer:
-- Required scopes are limited to read_orders. Order webhooks are used only to bill the merchant-approved 1.5% commission on orders attributed to a try-on request.
+- The app does not request order access. Billing is handled through Shopify App Pricing with monthly plans and per-try-on usage metering.
 - Shopper photos are collected transiently for AI generation, sent to OpenAI, and not stored by TryOnAI. Merchants can access persisted usage metadata in the admin and CSV exports; images are zero-retention by design. The privacy policy at /privacy discloses this.
 - Mandatory GDPR compliance webhooks (customers/data_request, customers/redact, shop/redact) are implemented and verify HMAC signatures.
 - The app uses managed installation, so /auth/callback intentionally returns 410 Gone — this is expected behavior of @shopify/shopify-app-react-router for the AppStore distribution profile.

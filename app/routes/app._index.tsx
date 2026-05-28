@@ -5,7 +5,6 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import {
-  COMMISSION_GRACE_DAYS,
   PLAN_DISPLAY,
   PLANS,
   TRIAL_DAYS,
@@ -14,6 +13,7 @@ import {
   isPlanKey,
   type PlanKey,
 } from "../lib/plans";
+import { refreshBillingState } from "../lib/billingSync.server";
 
 interface RecentTryOn {
   id: string;
@@ -24,15 +24,6 @@ interface RecentTryOn {
   costUsd: number;
 }
 
-interface RecentOrder {
-  id: string;
-  orderId: string;
-  createdAt: string;
-  subtotalUsd: number;
-  commissionUsd: number;
-  refunded: boolean;
-}
-
 interface LoaderData {
   shop: string;
   plan: PlanKey;
@@ -40,18 +31,13 @@ interface LoaderData {
   onTrial: boolean;
   trialDaysRemaining: number;
   trialTryOnsUsed: number;
-  commissionGraceActive: boolean;
   themeEditorUrl: string;
   cycle: {
     used: number;
     cap: number;
     pctUsed: number;
-    attributedOrders: number;
-    attributedRevenueUsd: number;
-    commissionAccruedUsd: number;
   };
   recentTryOns: RecentTryOn[];
-  recentOrders: RecentOrder[];
 }
 
 const TRYON_EXTENSION_UID = "53b5dfb4-3bb4-0954-72aa-7e751170befc5b13a1dd";
@@ -62,19 +48,10 @@ function round2(n: number): number {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  await db.shop.upsert({
-    where: { domain: shop },
-    create: { domain: shop },
-    update: {},
-  });
-  const billing = await db.billingState.upsert({
-    where: { shop },
-    create: { shop },
-    update: {},
-  });
+  const billing = await refreshBillingState({ shop, admin });
   const settings = await db.merchantSettings.upsert({
     where: { shop },
     create: { shop },
@@ -85,13 +62,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const cap = computeCap(plan, settings.capOverride ?? null);
 
   const cycleStart =
-    billing.currentCycleStart ?? billing.trialStartedAt ?? new Date(0);
-  const used = await db.usageLog.count({ where: { shop, cycleStart } });
-
-  const ordersAgg = await db.attributedOrder.aggregate({
-    _sum: { subtotalUsd: true, commissionUsd: true },
-    _count: { _all: true },
-    where: { shop, createdAt: { gte: cycleStart }, refundedAt: null },
+    plan === "trial"
+      ? billing.trialStartedAt
+      : billing.currentCycleStart ?? billing.trialStartedAt ?? new Date(0);
+  const used = await db.usageLog.count({
+    where: { shop, cycleStart, status: "ok" },
   });
 
   const trialAgeDays = Math.floor(
@@ -100,45 +75,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const trialTryOnsUsed =
     plan === "trial"
       ? await db.usageLog.count({
-          where: { shop, createdAt: { gte: billing.trialStartedAt } },
+          where: {
+            shop,
+            createdAt: { gte: billing.trialStartedAt },
+            status: "ok",
+          },
         })
       : 0;
 
-  const [recentTryOnsRaw, recentOrdersRaw] = await Promise.all([
-    db.usageLog.findMany({
-      where: { shop },
-      orderBy: { createdAt: "desc" },
-      take: 10,
-      select: {
-        id: true,
-        requestId: true,
-        createdAt: true,
-        status: true,
-        size: true,
-        costUsd: true,
-      },
-    }),
-    db.attributedOrder.findMany({
-      where: { shop },
-      orderBy: { createdAt: "desc" },
-      take: 5,
-      select: {
-        id: true,
-        orderId: true,
-        createdAt: true,
-        subtotalUsd: true,
-        commissionUsd: true,
-        refundedAt: true,
-      },
-    }),
-  ]);
-
-  const commissionGraceEndsAt = billing.paidPlanStartedAt
-    ? new Date(
-        billing.paidPlanStartedAt.getTime() +
-          COMMISSION_GRACE_DAYS * 86_400_000,
-      )
-    : null;
+  const recentTryOnsRaw = await db.usageLog.findMany({
+    where: { shop },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+    select: {
+      id: true,
+      requestId: true,
+      createdAt: true,
+      status: true,
+      size: true,
+      costUsd: true,
+    },
+  });
 
   const themeEditorUrl = `https://${shop}/admin/themes/current/editor?context=apps&template=product&activateAppId=${TRYON_EXTENSION_UID}/${TRYON_EXTENSION_HANDLE}`;
 
@@ -149,16 +106,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     onTrial: plan === "trial",
     trialDaysRemaining: Math.max(0, TRIAL_DAYS - trialAgeDays),
     trialTryOnsUsed,
-    commissionGraceActive:
-      !!commissionGraceEndsAt && commissionGraceEndsAt > new Date(),
     themeEditorUrl,
     cycle: {
       used,
       cap,
       pctUsed: cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0,
-      attributedOrders: ordersAgg._count._all,
-      attributedRevenueUsd: round2(Number(ordersAgg._sum.subtotalUsd ?? 0)),
-      commissionAccruedUsd: round2(Number(ordersAgg._sum.commissionUsd ?? 0)),
     },
     recentTryOns: recentTryOnsRaw.map((r) => ({
       id: r.id,
@@ -167,14 +119,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       status: r.status,
       size: r.size,
       costUsd: round2(r.costUsd),
-    })),
-    recentOrders: recentOrdersRaw.map((o) => ({
-      id: o.id,
-      orderId: o.orderId,
-      createdAt: o.createdAt.toISOString(),
-      subtotalUsd: round2(o.subtotalUsd),
-      commissionUsd: round2(o.commissionUsd),
-      refunded: !!o.refundedAt,
     })),
   };
   return data;
@@ -195,7 +139,7 @@ export default function Index() {
       {data.onTrial && (
         <s-banner tone="info" heading="You're on the Trial">
           {data.trialDaysRemaining} day
-          {data.trialDaysRemaining === 1 ? "" : "s"} remaining ·{" "}
+          {data.trialDaysRemaining === 1 ? "" : "s"} remaining -{" "}
           {data.trialTryOnsUsed}/{TRIAL_TRYONS} try-ons used.{" "}
           <s-link href="/app/billing">Choose a plan</s-link>
         </s-banner>
@@ -240,7 +184,7 @@ export default function Index() {
             </li>
             <li style={{ marginBottom: "0.75rem" }}>
               <strong>Verify the block is live on a product page.</strong> Open
-              any product page on your storefront in a new tab — you should see
+              any product page on your storefront in a new tab - you should see
               the &ldquo;Try it on&rdquo; button rendered where you added the
               block.
             </li>
@@ -269,21 +213,9 @@ export default function Index() {
             sub={`${data.cycle.pctUsed}% of cap`}
           />
           <StatCard
-            label="Attributed orders"
-            value={String(data.cycle.attributedOrders)}
-          />
-          <StatCard
-            label="Attributed revenue"
-            value={`$${data.cycle.attributedRevenueUsd.toFixed(2)}`}
-          />
-          <StatCard
-            label="Commission accrued"
-            value={`$${data.cycle.commissionAccruedUsd.toFixed(2)}`}
-            sub={
-              data.commissionGraceActive
-                ? "Grace period — not charged"
-                : undefined
-            }
+            label="Plan allowance"
+            value={PLANS[data.plan].included.toLocaleString()}
+            sub="included try-ons"
           />
         </s-stack>
       </s-section>
@@ -314,35 +246,9 @@ export default function Index() {
         )}
       </s-section>
 
-      <s-section accessibilityLabel="Recent attributed orders">
-        <s-stack direction="inline" gap="base">
-          <s-heading>Recent attributed orders</s-heading>
-          <s-button href="/app/export/orders" download="">
-            Download CSV
-          </s-button>
-        </s-stack>
-        {data.recentOrders.length === 0 ? (
-          <s-paragraph>
-            No attributed orders yet. Orders placed by a shopper after a try-on
-            will show here.
-          </s-paragraph>
-        ) : (
-          <s-stack direction="block" gap="small">
-            {data.recentOrders.map((o) => (
-              <Row
-                key={o.id}
-                left={new Date(o.createdAt).toLocaleDateString()}
-                mid={`Order ${o.orderId}${o.refunded ? " · refunded" : ""}`}
-                right={`$${o.subtotalUsd.toFixed(2)} · commission $${o.commissionUsd.toFixed(2)}`}
-              />
-            ))}
-          </s-stack>
-        )}
-      </s-section>
-
       <s-section slot="aside" heading="Plan">
         <s-paragraph>
-          {PLAN_DISPLAY[data.plan]} · {data.status}
+          {PLAN_DISPLAY[data.plan]} - {data.status}
         </s-paragraph>
         <s-paragraph>
           {PLANS[data.plan].included.toLocaleString()} try-ons / month included
@@ -368,9 +274,8 @@ export default function Index() {
 
       <s-section slot="aside" heading="Data access">
         <s-paragraph>
-          Merchants can review persisted try-on usage and attributed order
-          records in this dashboard or export them as CSV from the Recent
-          try-ons and Recent attributed orders sections.
+          Merchants can review persisted try-on usage records in this dashboard
+          or export them as CSV from the Recent try-ons section.
         </s-paragraph>
         <s-paragraph>
           Shopper photos and generated try-on images are processed only for the

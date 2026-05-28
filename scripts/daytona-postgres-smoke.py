@@ -5,7 +5,7 @@ Daytona Postgres Smoke Test
 Spawns a Daytona sandbox, installs psycopg2 (pure-Python Postgres driver),
 connects to Supabase via DIRECT_URL, and verifies:
   1) The connection works from a network unrestricted by corp DPI.
-  2) All 7 public tables exist.
+  2) All 6 public tables exist.
   3) The _prisma_migrations row for init_postgres is present with the
      correct checksum (so future `prisma migrate deploy` will recognize
      the baseline as already applied).
@@ -35,7 +35,7 @@ EXPECTED_MIGRATION = "20260520114313_init_postgres"
 EXPECTED_CHECKSUM = "fc361d0c604d9f3cc397a5ac0fab9bc4ec2fbbf13654fe0a56c67fbec8bd5c95"
 EXPECTED_TABLES = {
     "Session", "Shop", "MerchantSettings", "BillingState",
-    "UsageLog", "AttributedOrder", "_prisma_migrations",
+    "UsageLog", "_prisma_migrations",
 }
 
 

@@ -11,7 +11,6 @@ import {
   decrement as rateLimitDecrement,
 } from "../lib/rateLimit.server";
 import db from "../db.server";
-import { unauthenticated } from "../shopify.server";
 import {
   PLANS,
   TRIAL_DAYS,
@@ -21,6 +20,8 @@ import {
   requestId,
   type PlanKey,
 } from "../lib/plans";
+import { refreshBillingState } from "../lib/billingSync.server";
+import { sendTryOnUsageEvent } from "../lib/appEvents.server";
 
 type BlockReason =
   | "trial_expired"
@@ -163,6 +164,13 @@ export async function action({ request }: ActionFunctionArgs) {
       },
     );
   }
+
+  const installedShop = await db.shop.findUnique({ where: { domain: shop } });
+  if (!installedShop) {
+    return json({ error: "shop_not_installed" }, { status: 403 });
+  }
+
+  await refreshBillingState({ shop });
 
   const billing = await db.billingState.findUnique({
     where: { shop },
@@ -442,103 +450,46 @@ export async function action({ request }: ActionFunctionArgs) {
                 },
               });
               const planDef = PLANS[plan];
-              const overageUsd = planDef.overage;
-              if (plan !== "trial" && overageUsd !== null) {
-                // `used` was captured before generation; concurrent requests can undercount overage by one.
-                const usedAfter = used + 1;
-                if (usedAfter > planDef.included && billing.overageLineItemId) {
-                  try {
-                    const { admin } = await unauthenticated.admin(shop);
-                    const resp = await admin.graphql(
-                      `#graphql
-                        mutation tryonaiOverageCharge(
-                          $id: ID!
-                          $price: MoneyInput!
-                          $description: String!
-                        ) {
-                          appUsageRecordCreate(
-                            subscriptionLineItemId: $id
-                            price: $price
-                            description: $description
-                          ) {
-                            appUsageRecord { id }
-                            userErrors { field message }
-                          }
-                        }`,
-                      {
-                        variables: {
-                          id: billing.overageLineItemId,
-                          price: {
-                            amount: overageUsd,
-                            currencyCode: "USD",
-                          },
-                          description: `Overage try-on (request ${reqId})`,
-                        },
-                      },
-                    );
-                    const result = await resp.json();
-                    const errors =
-                      result?.data?.appUsageRecordCreate?.userErrors;
-                    if (errors?.length) {
-                      console.error(
-                        JSON.stringify({
-                          event: "appUsageRecordCreate_overage_user_errors",
-                          shop,
-                          request_id: reqId,
-                          errors,
-                        }),
-                      );
-                    } else {
-                      const overageChargeId =
-                        result?.data?.appUsageRecordCreate?.appUsageRecord
-                          ?.id ?? null;
-                      if (overageChargeId) {
-                        await db.usageLog.update({
-                          where: { id: usageLog.id },
-                          data: {
-                            overageChargeId,
-                            overageUsd,
-                          },
-                        });
-                        console.log(
-                          JSON.stringify({
-                            event: "appUsageRecordCreate_overage_success",
-                            shop,
-                            request_id: reqId,
-                            amount: overageUsd,
-                            usageChargeId: overageChargeId,
-                          }),
-                        );
-                      } else {
-                        console.error(
-                          JSON.stringify({
-                            event: "appUsageRecordCreate_overage_no_record",
-                            shop,
-                            request_id: reqId,
-                          }),
-                        );
-                      }
-                    }
-                  } catch (err) {
-                    console.error(
-                      JSON.stringify({
-                        event: "appUsageRecordCreate_overage_threw",
-                        shop,
-                        request_id: reqId,
-                        error:
-                          err instanceof Error ? err.message : String(err),
-                      }),
-                    );
-                  }
-                } else if (
-                  usedAfter > planDef.included &&
-                  !billing.overageLineItemId
-                ) {
-                  console.warn(
+              if (plan !== "trial" && planDef.overage !== null) {
+                try {
+                  const billingEvent = await sendTryOnUsageEvent({
+                    shopGid: billing.shopRef?.shopGid,
+                    requestId: reqId,
+                    timestamp: new Date(),
+                  });
+                  await db.usageLog.update({
+                    where: { id: usageLog.id },
+                    data: {
+                      billingEventId: billingEvent.eventId,
+                      billingEventStatus: billingEvent.status,
+                      billingEventError: billingEvent.error?.slice(0, 1000) ?? null,
+                    },
+                  });
+                  console.log(
                     JSON.stringify({
-                      event: "overage_not_billed_no_line_item",
+                      event: "app_event_tryon_generated",
                       shop,
-                      reqId,
+                      request_id: reqId,
+                      status: billingEvent.status,
+                      error: billingEvent.error ?? null,
+                    }),
+                  );
+                } catch (err) {
+                  const message = err instanceof Error ? err.message : String(err);
+                  await db.usageLog.update({
+                    where: { id: usageLog.id },
+                    data: {
+                      billingEventId: reqId.slice(0, 64),
+                      billingEventStatus: "failed",
+                      billingEventError: message.slice(0, 1000),
+                    },
+                  });
+                  console.error(
+                    JSON.stringify({
+                      event: "app_event_tryon_generated_threw",
+                      shop,
+                      request_id: reqId,
+                      error: message,
                     }),
                   );
                 }

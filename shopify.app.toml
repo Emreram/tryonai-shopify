@@ -24,20 +24,6 @@ api_version = "2026-07"
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
 
-  [[webhooks.subscriptions]]
-  topics = [ "app_subscriptions/update" ]
-  uri = "/webhooks/app_subscriptions/update"
-
-  # Commission billing requires Protected Customer Data approval for read_orders.
-  [[webhooks.subscriptions]]
-  topics = [ "orders/paid" ]
-  uri = "/webhooks/orders/paid"
-  include_fields = [ "id", "name", "subtotal_price_set", "note_attributes", "financial_status", "test" ]
-
-  [[webhooks.subscriptions]]
-  topics = [ "refunds/create" ]
-  uri = "/webhooks/refunds/create"
-
   [webhooks.privacy_compliance]
   customer_data_request_url = "/webhooks/customers/data_request"
   customer_deletion_url = "/webhooks/customers/redact"
@@ -50,8 +36,7 @@ prefix = "apps"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-# read_orders requires Protected Customer Data approval before deploy/submission.
-scopes = "read_orders"
+scopes = ""
 
 [auth]
 redirect_urls = [ "https://tryonai-app.vercel.app/auth/callback" ]
