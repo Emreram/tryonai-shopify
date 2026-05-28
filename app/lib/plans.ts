@@ -27,6 +27,22 @@ export const PLAN_DISPLAY: Record<PlanKey, string> = {
   scale: "Scale",
 };
 
+export const STATUS_LABEL: Record<string, string> = {
+  active: "Active",
+  inactive: "Inactive",
+  cancelled: "Cancelled",
+  declined: "Declined",
+  expired: "Expired",
+  frozen: "Frozen",
+  pending: "Pending",
+  uninstalled: "Inactive",
+};
+
+export function statusLabel(status: string | null | undefined): string {
+  if (!status) return "Unknown";
+  return STATUS_LABEL[status] ?? "Unknown";
+}
+
 export const PLAN_LINE_ITEM_TAGS = {
   usage: "tryon_generated",
 } as const;

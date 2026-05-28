@@ -11,6 +11,7 @@ import {
   TRIAL_TRYONS,
   computeCap,
   isPlanKey,
+  statusLabel,
   type PlanKey,
 } from "../lib/plans";
 import { refreshBillingState } from "../lib/billingSync.server";
@@ -248,7 +249,7 @@ export default function Index() {
 
       <s-section slot="aside" heading="Plan">
         <s-paragraph>
-          {PLAN_DISPLAY[data.plan]} - {data.status}
+          {PLAN_DISPLAY[data.plan]} - {statusLabel(data.status)}
         </s-paragraph>
         <s-paragraph>
           {PLANS[data.plan].included.toLocaleString()} try-ons / month included

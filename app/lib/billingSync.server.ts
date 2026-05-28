@@ -147,6 +147,12 @@ export async function refreshBillingState(args: {
   }
 
   if (!shopGid || !hasPartnerApiConfig()) {
+    if (existing.status === "uninstalled") {
+      return db.billingState.update({
+        where: { shop: args.shop },
+        data: { status: "inactive" },
+      });
+    }
     return existing;
   }
 
@@ -161,6 +167,12 @@ export async function refreshBillingState(args: {
         error: err instanceof Error ? err.message : String(err),
       }),
     );
+    if (existing.status === "uninstalled") {
+      return db.billingState.update({
+        where: { shop: args.shop },
+        data: { status: "inactive" },
+      });
+    }
     return existing;
   }
 

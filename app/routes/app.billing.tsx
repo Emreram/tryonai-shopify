@@ -12,6 +12,7 @@ import {
   TRIAL_TRYONS,
   computeCap,
   isPlanKey,
+  statusLabel,
   type PlanKey,
 } from "../lib/plans";
 import {
@@ -92,6 +93,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         })
       : 0;
 
+  const recentlyActivated = Boolean(
+    billing.paidPlanStartedAt &&
+      Date.now() - billing.paidPlanStartedAt.getTime() < 5 * 60_000,
+  );
+
   const data: LoaderData = {
     shop,
     plan,
@@ -107,7 +113,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       pctUsed: cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0,
       projectedNextBillUsd: round2(projectedNextBill),
     },
-    confirmed: Boolean(planHandle) && billing.status === "active",
+    confirmed:
+      (Boolean(planHandle) || recentlyActivated) && billing.status === "active",
     errorMessage: url.searchParams.get("error"),
     planPageUrl: hostedPlanPageUrl(shop),
   };
@@ -166,7 +173,7 @@ export default function BillingPage() {
           <s-stack direction="block" gap="base">
             <s-paragraph>
               <s-text>
-                Status: {data.status} - Try-ons this cycle: {data.cycle.used}/
+                Status: {statusLabel(data.status)} - Try-ons this cycle: {data.cycle.used}/
                 {data.cycle.included} included (cap: {data.cycle.cap})
               </s-text>
             </s-paragraph>
