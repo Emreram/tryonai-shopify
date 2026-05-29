@@ -14,18 +14,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await db.session.deleteMany({ where: { shop } });
   }
 
-  // Reset live billing state so a reinstall inside the 48h shop/redact window
-  // starts fresh. Historical UsageLog rows are preserved for analytics.
+  // Mark billing state as uninstalled but preserve trialStartedAt so the
+  // 14-day trial clock keeps running across uninstall/reinstall — reviewers
+  // flag trial-reset-on-reinstall as a way to game free usage.
   await db.billingState.updateMany({
     where: { shop },
     data: {
-      plan: "trial",
       status: "uninstalled",
       subscriptionId: null,
       paidPlanStartedAt: null,
       currentCycleStart: null,
       currentCycleEnd: null,
-      trialStartedAt: new Date(),
     },
   });
 

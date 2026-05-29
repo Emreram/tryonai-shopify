@@ -29,8 +29,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     update: {},
   });
 
+  // App Bridge (and the s-* web components) cannot initialize without the api
+  // key. An empty key silently ships an inert embedded app — the exact failure
+  // that caused the 1.2.3 rejection — so fail loudly on a misconfigured deploy
+  // rather than rendering dead buttons.
   // eslint-disable-next-line no-undef
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  const apiKey = process.env.SHOPIFY_API_KEY;
+  if (!apiKey) {
+    throw new Response("App misconfigured: SHOPIFY_API_KEY is missing", {
+      status: 500,
+    });
+  }
+  return { apiKey };
 };
 
 export default function App() {

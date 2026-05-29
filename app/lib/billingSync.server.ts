@@ -10,11 +10,6 @@ import {
   planFromName,
   type PlanKey,
 } from "./plans";
-import {
-  fetchActiveSubscription,
-  hasPartnerApiConfig,
-  type ActiveSubscription,
-} from "./partnerApi.server";
 
 type AdminClient = {
   graphql: (
@@ -22,6 +17,31 @@ type AdminClient = {
     options?: { variables?: Record<string, unknown> },
   ) => Promise<Response>;
 };
+
+/**
+ * Active subscription as returned by the Admin GraphQL
+ * `currentAppInstallation.activeSubscriptions` query. Only subscriptions in
+ * the ACTIVE state appear in this list, so the mere presence of an entry means
+ * the merchant has an approved, billable plan.
+ */
+interface AdminActiveSubscription {
+  id: string;
+  name: string;
+  status: string;
+  test: boolean;
+  currentPeriodEnd: string | null;
+  createdAt: string | null;
+  trialDays: number | null;
+  lineItems: Array<{
+    plan?: {
+      pricingDetails?: {
+        __typename?: string;
+        price?: { amount?: string | number | null } | null;
+        interval?: string | null;
+      } | null;
+    } | null;
+  }> | null;
+}
 
 function parseDate(value: string | null | undefined): Date | null {
   if (!value) return null;
@@ -33,11 +53,54 @@ function storeHandle(shopDomain: string): string {
   return shopDomain.replace(/\.myshopify\.com$/i, "");
 }
 
-export function hostedPlanPageUrl(shopDomain: string): string {
-  const appHandle = process.env.SHOPIFY_APP_HANDLE || "tryonai";
+function appHandle(): string {
+  return process.env.SHOPIFY_APP_HANDLE || "tryonaishopfy";
+}
+
+/**
+ * Decode the embedded app's `host` query param to the admin host that Shopify
+ * itself uses, e.g. `admin.shopify.com/store/asdfghjkl-123654200005`. This is
+ * NOT always the myshopify subdomain (e.g. a store can be `8mqr0k-qs.myshopify.com`
+ * while its admin handle is `asdfghjkl-123654200005`), so the hosted pricing
+ * page must be built from `host` rather than the shop domain to avoid landing
+ * on a broken store handle.
+ */
+export function decodeAdminHost(host: string | null | undefined): string | null {
+  if (!host) return null;
+  try {
+    const decoded = Buffer.from(host, "base64").toString("utf8");
+    const match = decoded.match(/^admin\.shopify\.com\/store\/[^/?#]+/i);
+    return match ? match[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the Shopify-hosted Managed Pricing ("Shopify App Pricing") plan page.
+ * Prefers the admin host decoded from the embedded `host` param; falls back to
+ * the shop's myshopify subdomain only when `host` is unavailable.
+ */
+export function hostedPlanPageUrl(args: {
+  shop: string;
+  host?: string | null;
+}): string {
+  const handle = encodeURIComponent(appHandle());
+  const adminHost = decodeAdminHost(args.host);
+  if (adminHost) {
+    return `https://${adminHost}/charges/${handle}/pricing_plans`;
+  }
+  // Fallback: the myshopify subdomain is NOT always the admin store handle, so
+  // this URL can land on a broken store handle. Log it so a future bad-handle
+  // case is visible in Vercel logs rather than silently producing a dead link.
+  logWarn(
+    "hosted_plan_url_host_fallback",
+    args.shop,
+    "missing/undecodable host param; using myshopify subdomain (may be the wrong admin handle)",
+  );
   return `https://admin.shopify.com/store/${encodeURIComponent(
-    storeHandle(shopDomain),
-  )}/charges/${encodeURIComponent(appHandle)}/pricing_plans`;
+    storeHandle(args.shop),
+  )}/charges/${handle}/pricing_plans`;
 }
 
 function planFromHandle(value: string | null | undefined): PlanKey | null {
@@ -49,74 +112,140 @@ function planFromHandle(value: string | null | undefined): PlanKey | null {
     : inferred;
 }
 
-function recurringAmount(active: ActiveSubscription): number | null {
-  for (const item of active.items ?? []) {
-    const price = item.price;
-    if (price?.__typename !== "FlatRatePrice") continue;
-    if (price.active === false) continue;
-    const amount = Number(price.amount);
+function recurringAmount(sub: AdminActiveSubscription): number | null {
+  for (const item of sub.lineItems ?? []) {
+    const details = item.plan?.pricingDetails;
+    if (details?.__typename !== "AppRecurringPricing") continue;
+    const amount = Number(details.price?.amount);
     if (Number.isFinite(amount)) return amount;
   }
   return null;
 }
 
+function intervalDays(sub: AdminActiveSubscription): number {
+  for (const item of sub.lineItems ?? []) {
+    const details = item.plan?.pricingDetails;
+    if (details?.__typename === "AppRecurringPricing") {
+      return details.interval === "ANNUAL" ? 365 : 30;
+    }
+  }
+  return 30;
+}
+
 function planFromSubscription(
-  active: ActiveSubscription,
+  sub: AdminActiveSubscription,
   planHandle: string | null,
   existingPlan: string | null | undefined,
 ): PlanKey {
+  // 1. The `plan_handle` Shopify appends to the return URL after selection.
   const hinted = planFromHandle(planHandle);
   if (hinted) return hinted;
 
-  const text = (active.items ?? [])
-    .flatMap((item) => [item.handle, item.description])
-    .filter(Boolean)
-    .join(" ");
-  const named = planFromHandle(text);
+  // 2. The subscription name — Managed Pricing names the subscription after
+  //    the plan the merchant chose (e.g. "Growth").
+  const named = planFromHandle(sub.name);
   if (named) return named;
 
-  const amount = recurringAmount(active);
+  // 3. Fall back to matching the recurring price to a known plan.
+  const amount = recurringAmount(sub);
   const byPrice = PAID_PLAN_KEYS.find((key) => PLANS[key].price === amount);
   if (byPrice) return byPrice;
+
   return isPlanKey(existingPlan) ? existingPlan : "trial";
 }
 
-async function fetchShopGid(
-  shop: string,
-  admin?: AdminClient,
-): Promise<string | null> {
+function logWarn(event: string, shop: string, err: unknown): void {
+  console.warn(
+    JSON.stringify({
+      event,
+      shop,
+      error: err instanceof Error ? err.message : String(err),
+    }),
+  );
+}
+
+/**
+ * Cache the shop's GID on the Shop row. Not needed for billing itself, but the
+ * usage-metering path (App Events API) reads `Shop.shopGid`, so keep it fresh.
+ */
+async function cacheShopGid(shop: string, admin: AdminClient): Promise<void> {
   const existing = await db.shop.findUnique({
     where: { domain: shop },
     select: { shopGid: true },
   });
-  if (existing?.shopGid) return existing.shopGid;
+  if (existing?.shopGid) return;
 
-  let client = admin;
-  if (!client) {
-    const unauth = await unauthenticated.admin(shop);
-    client = unauth.admin;
-  }
-
-  const response = await client.graphql(
+  const response = await admin.graphql(
     `#graphql
       query TryonaiShopGid {
         shop {
           id
-          myshopifyDomain
         }
       }`,
   );
   const json = await response.json();
   const shopGid = json?.data?.shop?.id;
-  if (typeof shopGid !== "string" || !shopGid) return null;
-
-  await db.shop.update({
-    where: { domain: shop },
-    data: { shopGid },
-  });
-  return shopGid;
+  if (typeof shopGid === "string" && shopGid) {
+    await db.shop.update({ where: { domain: shop }, data: { shopGid } });
+  }
 }
 
+/**
+ * Read the app's own active subscription via the merchant Admin API. Works with
+ * both the online session client (from admin loaders) and the offline client
+ * (`unauthenticated.admin`, used by the storefront app-proxy path). Requires no
+ * extra access scope — an app may always read its own installation.
+ */
+async function fetchActiveSubscription(
+  admin: AdminClient,
+): Promise<AdminActiveSubscription | null> {
+  const response = await admin.graphql(
+    `#graphql
+      query TryonaiActiveSubscriptions {
+        currentAppInstallation {
+          activeSubscriptions {
+            id
+            name
+            status
+            test
+            currentPeriodEnd
+            createdAt
+            trialDays
+            lineItems {
+              plan {
+                pricingDetails {
+                  __typename
+                  ... on AppRecurringPricing {
+                    price {
+                      amount
+                    }
+                    interval
+                  }
+                }
+              }
+            }
+          }
+        }
+      }`,
+  );
+
+  const json = await response.json();
+  if (json?.errors?.length) {
+    throw new Error(JSON.stringify(json.errors));
+  }
+
+  const subs = json?.data?.currentAppInstallation?.activeSubscriptions;
+  if (!Array.isArray(subs) || subs.length === 0) return null;
+  const active =
+    subs.find((s) => String(s?.status).toUpperCase() === "ACTIVE") ?? subs[0];
+  return (active as AdminActiveSubscription) ?? null;
+}
+
+/**
+ * Reconcile local BillingState with Shopify's live subscription truth. Shopify
+ * (Managed Pricing) is authoritative; the local row is a cache that gates the
+ * high-frequency storefront try-on path and tracks the app's own free trial.
+ */
 export async function refreshBillingState(args: {
   shop: string;
   admin?: AdminClient;
@@ -133,20 +262,45 @@ export async function refreshBillingState(args: {
     update: {},
   });
 
-  let shopGid: string | null = null;
-  try {
-    shopGid = await fetchShopGid(args.shop, args.admin);
-  } catch (err) {
-    console.warn(
-      JSON.stringify({
-        event: "shop_gid_sync_failed",
-        shop: args.shop,
-        error: err instanceof Error ? err.message : String(err),
-      }),
-    );
+  // Admin page loaders pass an `admin` client and always refresh so the
+  // merchant sees live status. The storefront app-proxy path passes no client
+  // and runs on every try-on, so throttle those background refreshes to avoid
+  // hitting the Admin API on each request. A returning approval (`planHandle`)
+  // or an uninstalled row always forces a fresh read.
+  if (
+    !args.admin &&
+    !args.planHandle &&
+    existing.status !== "uninstalled" &&
+    Date.now() - existing.updatedAt.getTime() < 5 * 60_000
+  ) {
+    return existing;
   }
 
-  if (!shopGid || !hasPartnerApiConfig()) {
+  // Resolve an admin client. Loaders pass the online session client; the
+  // app-proxy path passes nothing, so fall back to the offline token.
+  let admin = args.admin;
+  if (!admin) {
+    try {
+      const unauth = await unauthenticated.admin(args.shop);
+      admin = unauth.admin;
+    } catch (err) {
+      logWarn("billing_admin_unauth_failed", args.shop, err);
+      return existing; // Can't reach Shopify — keep last-known state.
+    }
+  }
+
+  // Best-effort GID cache for usage metering; never block billing on it.
+  try {
+    await cacheShopGid(args.shop, admin);
+  } catch (err) {
+    logWarn("shop_gid_sync_failed", args.shop, err);
+  }
+
+  let subscription: AdminActiveSubscription | null = null;
+  try {
+    subscription = await fetchActiveSubscription(admin);
+  } catch (err) {
+    logWarn("active_subscription_admin_failed", args.shop, err);
     if (existing.status === "uninstalled") {
       return db.billingState.update({
         where: { shop: args.shop },
@@ -156,27 +310,10 @@ export async function refreshBillingState(args: {
     return existing;
   }
 
-  let active: ActiveSubscription | null = null;
-  try {
-    active = await fetchActiveSubscription(shopGid);
-  } catch (err) {
-    console.warn(
-      JSON.stringify({
-        event: "partner_active_subscription_failed",
-        shop: args.shop,
-        error: err instanceof Error ? err.message : String(err),
-      }),
-    );
-    if (existing.status === "uninstalled") {
-      return db.billingState.update({
-        where: { shop: args.shop },
-        data: { status: "inactive" },
-      });
-    }
-    return existing;
-  }
-
-  if (!active) {
+  if (!subscription) {
+    // No ACTIVE subscription: on trial, declined, expired, or post-reinstall
+    // (the prior subscription is CANCELLED and no longer listed). Reset to the
+    // trial baseline so the UI prompts the merchant to choose a plan.
     return db.billingState.update({
       where: { shop: args.shop },
       data: {
@@ -193,32 +330,35 @@ export async function refreshBillingState(args: {
   }
 
   const plan = planFromSubscription(
-    active,
+    subscription,
     args.planHandle ?? null,
     existing.plan,
   );
-  const cycleStart =
-    parseDate(active.currentBillingCycle?.startTime) ??
-    existing.currentCycleStart ??
-    new Date();
-  const cycleEnd = parseDate(active.currentBillingCycle?.endTime);
-  const trialEndsAt = parseDate(active.trialEndsAt);
+  if (!PLAN_KEYS.includes(plan)) {
+    return existing;
+  }
+
+  const cycleEnd = parseDate(subscription.currentPeriodEnd);
+  const cycleStart = cycleEnd
+    ? new Date(cycleEnd.getTime() - intervalDays(subscription) * 86_400_000)
+    : existing.currentCycleStart ?? new Date();
+  const created = parseDate(subscription.createdAt);
+  const trialEndsAt =
+    created && subscription.trialDays && subscription.trialDays > 0
+      ? new Date(created.getTime() + subscription.trialDays * 86_400_000)
+      : null;
   const monthlyCap = computeCap(plan, null);
   const paidPlanStartedAt =
     plan !== "trial"
       ? existing.paidPlanStartedAt ?? cycleStart
       : existing.paidPlanStartedAt;
 
-  if (!PLAN_KEYS.includes(plan)) {
-    return existing;
-  }
-
   return db.billingState.update({
     where: { shop: args.shop },
     data: {
       plan,
       status: "active",
-      subscriptionId: null,
+      subscriptionId: subscription.id,
       paidPlanStartedAt,
       currentCycleStart: cycleStart,
       currentCycleEnd: cycleEnd,

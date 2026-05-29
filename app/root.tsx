@@ -4,7 +4,14 @@ export default function App() {
   return (
     <html lang="en">
       <head>
-        <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+        {/*
+          App Bridge is injected (with the api key) by <AppProvider embedded>
+          in app/routes/app.tsx — it renders the keyed app-bridge.js followed by
+          polaris.js. Do NOT add a manual <script src="app-bridge.js"> here: an
+          unkeyed copy in <head> boots App Bridge with no API key first, leaving
+          the keyed copy a no-op duplicate, which breaks the embedded session and
+          leaves the s-* web components inert. (Matches the official template.)
+        */}
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
         <link rel="preconnect" href="https://cdn.shopify.com/" />

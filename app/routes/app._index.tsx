@@ -14,12 +14,12 @@ import {
   statusLabel,
   type PlanKey,
 } from "../lib/plans";
-import { refreshBillingState } from "../lib/billingSync.server";
+import { hostedPlanPageUrl, refreshBillingState } from "../lib/billingSync.server";
 
 interface RecentTryOn {
   id: string;
   requestId: string;
-  createdAt: string;
+  createdAtLabel: string;
   status: string;
   size: string;
   costUsd: number;
@@ -39,6 +39,7 @@ interface LoaderData {
     pctUsed: number;
   };
   recentTryOns: RecentTryOn[];
+  planPageUrl: string;
 }
 
 const TRYON_EXTENSION_UID = "53b5dfb4-3bb4-0954-72aa-7e751170befc5b13a1dd";
@@ -48,9 +49,23 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+// Format on the server with an explicit locale + timeZone so SSR and client
+// hydration produce byte-identical text (a bare toLocaleString() differs
+// between Vercel/UTC and the merchant's browser TZ -> React hydration #418/#423).
+const TRYON_TIMESTAMP_FMT = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "UTC",
+  hour12: false,
+});
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
+  const host = new URL(request.url).searchParams.get("host");
 
   const billing = await refreshBillingState({ shop, admin });
   const settings = await db.merchantSettings.upsert({
@@ -116,11 +131,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     recentTryOns: recentTryOnsRaw.map((r) => ({
       id: r.id,
       requestId: r.requestId,
-      createdAt: r.createdAt.toISOString(),
+      createdAtLabel: `${TRYON_TIMESTAMP_FMT.format(r.createdAt)} UTC`,
       status: r.status,
       size: r.size,
       costUsd: round2(r.costUsd),
     })),
+    planPageUrl: hostedPlanPageUrl({ shop, host }),
   };
   return data;
 };
@@ -215,7 +231,7 @@ export default function Index() {
           />
           <StatCard
             label="Plan allowance"
-            value={PLANS[data.plan].included.toLocaleString()}
+            value={PLANS[data.plan].included.toLocaleString("en-US")}
             sub="included try-ons"
           />
         </s-stack>
@@ -238,7 +254,7 @@ export default function Index() {
             {data.recentTryOns.map((r) => (
               <Row
                 key={r.id}
-                left={new Date(r.createdAt).toLocaleString()}
+                left={r.createdAtLabel}
                 mid={`${r.requestId} | ${r.size} | ${r.status}`}
                 right={`$${r.costUsd.toFixed(4)}`}
               />
@@ -248,13 +264,24 @@ export default function Index() {
       </s-section>
 
       <s-section slot="aside" heading="Plan">
-        <s-paragraph>
-          {PLAN_DISPLAY[data.plan]} - {statusLabel(data.status)}
-        </s-paragraph>
-        <s-paragraph>
-          {PLANS[data.plan].included.toLocaleString()} try-ons / month included
-        </s-paragraph>
-        <s-link href="/app/billing">Manage plan</s-link>
+        <s-stack direction="block" gap="base">
+          <s-paragraph>
+            {PLAN_DISPLAY[data.plan]} - {statusLabel(data.status)}
+          </s-paragraph>
+          <s-paragraph>
+            {PLANS[data.plan].included.toLocaleString("en-US")} try-ons / month
+            included
+          </s-paragraph>
+          {/*
+            Breaks out of the embedded iframe (target="_top") straight to
+            Shopify's hosted Managed Pricing page so the merchant can
+            upgrade/downgrade in one click from the home screen.
+          */}
+          <s-button href={data.planPageUrl} target="_top" variant="primary">
+            {data.onTrial ? "View plans" : "Change plan"}
+          </s-button>
+          <s-link href="/app/billing">Manage plan</s-link>
+        </s-stack>
       </s-section>
 
       <s-section slot="aside" heading="Get started">
