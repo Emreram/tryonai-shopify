@@ -58,49 +58,23 @@ function appHandle(): string {
 }
 
 /**
- * Decode the embedded app's `host` query param to the admin host that Shopify
- * itself uses, e.g. `admin.shopify.com/store/asdfghjkl-123654200005`. This is
- * NOT always the myshopify subdomain (e.g. a store can be `8mqr0k-qs.myshopify.com`
- * while its admin handle is `asdfghjkl-123654200005`), so the hosted pricing
- * page must be built from `host` rather than the shop domain to avoid landing
- * on a broken store handle.
- */
-export function decodeAdminHost(host: string | null | undefined): string | null {
-  if (!host) return null;
-  try {
-    const decoded = Buffer.from(host, "base64").toString("utf8");
-    const match = decoded.match(/^admin\.shopify\.com\/store\/[^/?#]+/i);
-    return match ? match[0] : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Build the Shopify-hosted Managed Pricing ("Shopify App Pricing") plan page.
- * Prefers the admin host decoded from the embedded `host` param; falls back to
- * the shop's myshopify subdomain only when `host` is unavailable.
+ *
+ * Per Shopify's docs the URL is
+ * `https://admin.shopify.com/store/{storeHandle}/charges/{appHandle}/pricing_plans`,
+ * where `storeHandle` is the shop's myshopify subdomain. We derive it from
+ * `session.shop` (always available in admin loaders) rather than the embedded
+ * `host` param: `host` is ABSENT on React Router `.data` revalidation requests,
+ * so a host-derived URL flipped to a fallback on every poll — the confirmed
+ * source of the `hosted_plan_url_host_fallback` churn and the "loops on the
+ * selection" symptom. Deriving from `shop` makes the URL byte-identical on the
+ * first load and on every revalidation, and matches the documented pattern
+ * (`redirect(url, { target: "_top" })`).
  */
-export function hostedPlanPageUrl(args: {
-  shop: string;
-  host?: string | null;
-}): string {
+export function hostedPlanPageUrl(args: { shop: string }): string {
   const handle = encodeURIComponent(appHandle());
-  const adminHost = decodeAdminHost(args.host);
-  if (adminHost) {
-    return `https://${adminHost}/charges/${handle}/pricing_plans`;
-  }
-  // Fallback: the myshopify subdomain is NOT always the admin store handle, so
-  // this URL can land on a broken store handle. Log it so a future bad-handle
-  // case is visible in Vercel logs rather than silently producing a dead link.
-  logWarn(
-    "hosted_plan_url_host_fallback",
-    args.shop,
-    "missing/undecodable host param; using myshopify subdomain (may be the wrong admin handle)",
-  );
-  return `https://admin.shopify.com/store/${encodeURIComponent(
-    storeHandle(args.shop),
-  )}/charges/${handle}/pricing_plans`;
+  const store = encodeURIComponent(storeHandle(args.shop));
+  return `https://admin.shopify.com/store/${store}/charges/${handle}/pricing_plans`;
 }
 
 function planFromHandle(value: string | null | undefined): PlanKey | null {
@@ -137,20 +111,25 @@ function planFromSubscription(
   planHandle: string | null,
   existingPlan: string | null | undefined,
 ): PlanKey {
-  // 1. The `plan_handle` Shopify appends to the return URL after selection.
+  // 1. The `plan_handle` Shopify appends to the return URL after selection is
+  //    the authoritative signal: our Managed Pricing handles are exactly the
+  //    PlanKeys ("starter"/"growth"/"scale"), so this is an exact match.
   const hinted = planFromHandle(planHandle);
   if (hinted) return hinted;
 
-  // 2. The subscription name — Managed Pricing names the subscription after
-  //    the plan the merchant chose (e.g. "Growth").
-  const named = planFromHandle(sub.name);
-  if (named) return named;
-
-  // 3. Fall back to matching the recurring price to a known plan.
+  // 2. Exact recurring price. Managed Pricing reports the configured plan price
+  //    ($49/$129/$349) verbatim, so it's an exact, deterministic match — more
+  //    reliable than the name, which can be renamed or localized.
   const amount = recurringAmount(sub);
   const byPrice = PAID_PLAN_KEYS.find((key) => PLANS[key].price === amount);
   if (byPrice) return byPrice;
 
+  // 3. Last resort: the subscription name (fuzzy substring match).
+  const named = planFromHandle(sub.name);
+  if (named) return named;
+
+  // 4. Keep the last-known plan rather than silently dropping to trial when an
+  //    active subscription exists but matched none of the above.
   return isPlanKey(existingPlan) ? existingPlan : "trial";
 }
 

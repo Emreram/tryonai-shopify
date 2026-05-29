@@ -65,7 +65,6 @@ const TRYON_TIMESTAMP_FMT = new Intl.DateTimeFormat("en-US", {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
-  const host = new URL(request.url).searchParams.get("host");
 
   const billing = await refreshBillingState({ shop, admin });
   const settings = await db.merchantSettings.upsert({
@@ -136,7 +135,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       size: r.size,
       costUsd: round2(r.costUsd),
     })),
-    planPageUrl: hostedPlanPageUrl({ shop, host }),
+    planPageUrl: hostedPlanPageUrl({ shop }),
   };
   return data;
 };

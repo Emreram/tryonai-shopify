@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData, useRevalidator } from "react-router";
 
@@ -58,8 +58,12 @@ const RENEWAL_FMT = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 });
 
-// Bounded client-side polling while a just-approved plan change propagates.
-const MAX_REFRESH_ATTEMPTS = 5;
+// Bounded client-side polling while a just-approved plan change propagates on
+// Shopify's side. ~6 x 2.5s = 15s of headroom for the new subscription to show
+// up in currentAppInstallation.activeSubscriptions, after which we surface a
+// terminal state instead of an endless "Finishing..." spinner.
+const MAX_REFRESH_ATTEMPTS = 6;
+const REFRESH_INTERVAL_MS = 2500;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -70,7 +74,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const planHandle = planHandles.length
     ? planHandles[planHandles.length - 1]
     : null;
-  const host = url.searchParams.get("host");
 
   const billing = await refreshBillingState({
     shop,
@@ -141,7 +144,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           ? "confirmed"
           : "pending",
     errorMessage: url.searchParams.get("error"),
-    planPageUrl: hostedPlanPageUrl({ shop, host }),
+    planPageUrl: hostedPlanPageUrl({ shop }),
   };
   return data;
 };
@@ -150,19 +153,32 @@ export default function BillingPage() {
   const data = useLoaderData<typeof loader>() as LoaderData;
   const revalidator = useRevalidator();
   const refreshAttempts = useRef(0);
+  // Once polling is exhausted while still pending, flip to a terminal state so
+  // the merchant gets a clear next step instead of an endless spinner.
+  const [pollExhausted, setPollExhausted] = useState(false);
 
   // While a just-approved plan change is still propagating on Shopify's side,
-  // re-query the loader a bounded number of times (5 x 2s) so the new plan
-  // reflects automatically without the merchant reloading. Bounded and
-  // idle-gated so it can never become the "loops before it reflects" symptom.
+  // re-query the loader a bounded number of times so the new plan reflects
+  // automatically without the merchant reloading. Bounded + idle-gated so it
+  // can never become the "loops before it reflects" symptom; once the loader
+  // reports a confirmed active plan the effect stops on its own.
   useEffect(() => {
-    if (data.returnState !== "pending") return;
+    if (data.returnState !== "pending") {
+      // Confirmed, or not returning from checkout: reset so a later plan
+      // change within the same session can poll again from scratch.
+      refreshAttempts.current = 0;
+      setPollExhausted(false);
+      return;
+    }
     if (revalidator.state !== "idle") return;
-    if (refreshAttempts.current >= MAX_REFRESH_ATTEMPTS) return;
+    if (refreshAttempts.current >= MAX_REFRESH_ATTEMPTS) {
+      setPollExhausted(true);
+      return;
+    }
     const timer = setTimeout(() => {
       refreshAttempts.current += 1;
       revalidator.revalidate();
-    }, 2000);
+    }, REFRESH_INTERVAL_MS);
     return () => clearTimeout(timer);
   }, [data.returnState, revalidator]);
 
@@ -188,15 +204,28 @@ export default function BillingPage() {
           Your {PLAN_DISPLAY[data.plan]} plan is active.
         </s-banner>
       )}
-      {data.returnState === "pending" && (
+      {data.returnState === "pending" && !pollExhausted && (
         <s-banner tone="info" heading="Finishing your plan change">
+          <s-paragraph>
+            We&apos;re confirming your selection with Shopify - this can take a
+            few seconds.
+          </s-paragraph>
+        </s-banner>
+      )}
+      {data.returnState === "pending" && pollExhausted && (
+        <s-banner tone="warning" heading="We couldn't confirm your plan change">
           <s-stack direction="block" gap="small">
             <s-paragraph>
-              We&apos;re confirming your selection with Shopify - this can take
-              a few seconds. If you declined the charge or still need to add a
-              payment method, choose a plan again below.
+              If you just approved the charge, it can take another moment - use
+              Refresh status. If you declined the charge or still need to add a
+              payment method, choose a plan again.
             </s-paragraph>
-            <s-link href="/app/billing">Refresh status</s-link>
+            <s-stack direction="inline" gap="base">
+              <s-link href="/app/billing">Refresh status</s-link>
+              <s-button href={data.planPageUrl} target="_top" variant="primary">
+                Choose a plan
+              </s-button>
+            </s-stack>
           </s-stack>
         </s-banner>
       )}
@@ -262,9 +291,10 @@ export default function BillingPage() {
             charge there, and your selection is reflected here automatically.
           </s-paragraph>
           {/*
-            Opens Shopify's hosted Managed Pricing page in the top frame. The
-            URL is built from the embedded `host` param so it uses the same
-            admin store handle Shopify uses (not the myshopify subdomain).
+            Opens Shopify's hosted Managed Pricing page in the top frame
+            (target="_top"). The URL is derived from session.shop's store
+            handle (see hostedPlanPageUrl) so it's identical on first load and
+            on every `.data` revalidation.
           */}
           <s-button href={data.planPageUrl} target="_top" variant="primary">
             {ctaLabel}
