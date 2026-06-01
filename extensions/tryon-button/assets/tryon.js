@@ -153,6 +153,27 @@
       }
     });
 
+    // Mobile robustness: bind the dismiss affordances (✕ button + backdrop)
+    // DIRECTLY, in addition to the modal-level click delegation above. On some
+    // mobile browsers — notably iOS while the body scroll-lock is active — the
+    // synthesized `click` that should bubble up to the modal listener is
+    // dropped, so the ✕ appeared dead on phones. A direct listener that also
+    // handles `touchend` closes reliably: touchend's preventDefault cancels the
+    // would-be follow-up click and stopPropagation stops the delegation handler
+    // from firing a second time, so there is no double-close.
+    const bindDismiss = (el) => {
+      if (!el) return;
+      const onDismiss = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeModal();
+      };
+      el.addEventListener("click", onDismiss);
+      el.addEventListener("touchend", onDismiss, { passive: false });
+    };
+    bindDismiss(modal.querySelector(".tryonai-close"));
+    bindDismiss(modal.querySelector(".tryonai-scrim"));
+
     fileInput.addEventListener("change", () => {
       state.selfieFile = fileInput.files?.[0] ?? null;
       updateSelfieUI();
@@ -1006,6 +1027,18 @@
           } catch (_) { /* keep default */ }
           throw new Error(message);
         }
+
+        // Read the added line item(s) so the tracking beacon can attribute the
+        // cart value. Parsing failures are swallowed — the add-to-cart already
+        // succeeded and must never be blocked or undone by tracking.
+        let addedBody = null;
+        try {
+          addedBody = await res.json();
+        } catch (_) {
+          /* not JSON / already consumed — beacon still records the count */
+        }
+        reportCartAdd(variantId, addedBody);
+
         announce("Added to cart.");
         hideError();
 
@@ -1035,6 +1068,56 @@
         showError(err.message || "Add to cart failed");
       } finally {
         addToCartBtn.disabled = false;
+      }
+    }
+
+    // Best-effort attribution beacon so the app can count tool-driven add-to-carts
+    // (and the cart value they drove) on the private owner dashboard. Fire-and-
+    // forget: it never blocks the UX, never surfaces errors, and `keepalive` lets
+    // it complete even though the modal closes ~700ms later. The server refuses
+    // any beacon whose requestId doesn't match a real try-on, so this can't be
+    // used to inflate the numbers.
+    function reportCartAdd(variantId, addedBody) {
+      try {
+        // Without the originating try-on id the server can't verify/attribute it.
+        if (!state.requestId) return;
+        const item =
+          addedBody && Array.isArray(addedBody.items)
+            ? addedBody.items[0]
+            : addedBody;
+        const toInt = (v) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? Math.round(n) : null;
+        };
+        const priceCents = item ? toInt(item.price) : null;
+        const lineValueCents = item
+          ? toInt(item.final_line_price != null ? item.final_line_price : item.line_price)
+          : null;
+        const quantity = (item && toInt(item.quantity)) || 1;
+        const currency =
+          (window.Shopify &&
+            window.Shopify.currency &&
+            window.Shopify.currency.active) ||
+          null;
+        fetch("/apps/tryonai/cart-event", {
+          method: "POST",
+          credentials: "same-origin",
+          keepalive: true,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requestId: state.requestId,
+            productHandle: productHandle || null,
+            variantId: variantId != null ? String(variantId) : null,
+            quantity,
+            priceCents,
+            lineValueCents,
+            currency,
+          }),
+        }).catch(() => {
+          /* network failure is non-fatal for tracking */
+        });
+      } catch (_) {
+        /* attribution must never affect the add-to-cart flow */
       }
     }
 

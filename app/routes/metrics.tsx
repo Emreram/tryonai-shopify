@@ -11,6 +11,7 @@ import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 
 import {
   buildOwnerMetrics,
+  type CurrencyValueRow,
   type LedgerRow,
   type OwnerMetrics,
   type ShopRow,
@@ -133,6 +134,20 @@ const DATE = new Intl.DateTimeFormat("en-US", {
 });
 const fmtDate = (iso: string | null) => (iso ? DATE.format(new Date(iso)) : "—");
 
+// Money in an arbitrary shop currency. Intl needs a valid ISO code; fall back to
+// "<amount> <code>" (or a bare amount for the unknown "—" bucket) when it isn't.
+function fmtMoney(value: number, currency: string | null): string {
+  if (!currency || currency === "—") return value.toFixed(2);
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+    }).format(value);
+  } catch {
+    return `${value.toFixed(2)} ${currency}`;
+  }
+}
+
 export default function Metrics() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
@@ -240,6 +255,8 @@ function Dashboard({ m }: { m: OwnerMetrics }) {
         acceptance. All times are UTC.
       </div>
 
+      <CartSection m={m} />
+
       <SectionTitle>Current billing cycle (run-rate)</SectionTitle>
       <CardRow>
         <Card label="Revenue (est.)" value={usd2(t.revenueCycle)} />
@@ -279,6 +296,101 @@ function Dashboard({ m }: { m: OwnerMetrics }) {
       <SectionTitle>Last 30 days (UTC)</SectionTitle>
       <Trend points={m.trend} />
     </main>
+  );
+}
+
+function CartSection({ m }: { m: OwnerMetrics }) {
+  const c = m.cart;
+  const hasValue = c.byCurrency.some((r) => r.value > 0);
+  return (
+    <>
+      <SectionTitle>Tool-driven add-to-carts</SectionTitle>
+      <p style={{ color: MUTED, fontSize: 12.5, marginTop: 0, marginBottom: "0.5rem" }}>
+        Shoppers who added an item to their cart straight from the try-on result.
+        Counted once per try-on (a result added twice still counts once), and only
+        when it ties back to a real generation. Cart value is captured at
+        add-to-cart time and commission is an <em>estimate</em> — carts can be
+        abandoned, so treat it as a ceiling, not booked revenue.
+      </p>
+      <CardRow>
+        <Card
+          label="Add-to-carts (all-time)"
+          value={c.addToCarts.toLocaleString("en-US")}
+          color={GREEN}
+          big
+        />
+        <Card
+          label="This billing cycle"
+          value={c.addToCartsCycle.toLocaleString("en-US")}
+        />
+        <Card label="Try-on → cart rate" value={pct(c.conversionRatePct)} />
+        <Card
+          label="Attributed cart value"
+          value={
+            c.primaryCurrency
+              ? fmtMoney(c.attributedValuePrimary ?? 0, c.primaryCurrency)
+              : hasValue
+                ? "See below"
+                : "—"
+          }
+        />
+        <Card
+          label={`Est. commission (@${c.commissionPct}%)`}
+          value={
+            c.primaryCurrency
+              ? fmtMoney(c.commissionPrimary ?? 0, c.primaryCurrency)
+              : hasValue
+                ? "See below"
+                : "—"
+          }
+          color={GREEN}
+        />
+      </CardRow>
+      {hasValue ? (
+        <CartByCurrency rows={c.byCurrency} pctRate={c.commissionPct} />
+      ) : null}
+    </>
+  );
+}
+
+function CartByCurrency({
+  rows,
+  pctRate,
+}: {
+  rows: CurrencyValueRow[];
+  pctRate: number;
+}) {
+  const shown = rows.filter((r) => r.value > 0 || r.count > 0);
+  if (shown.length === 0) return null;
+  return (
+    <div style={{ marginTop: "0.6rem" }}>
+      {tableWrap(
+        <>
+          <thead>
+            <tr>
+              <th style={th}>Currency</th>
+              <th style={{ ...th, textAlign: "right" }}>Cart adds</th>
+              <th style={{ ...th, textAlign: "right" }}>Cart value</th>
+              <th style={{ ...th, textAlign: "right" }}>
+                Est. commission (@{pctRate}%)
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((r) => (
+              <tr key={r.currency}>
+                <td style={td}>{r.currency === "—" ? "Unknown" : r.currency}</td>
+                <td style={tdNum}>{r.count.toLocaleString("en-US")}</td>
+                <td style={tdNum}>{fmtMoney(r.value, r.currency)}</td>
+                <td style={{ ...tdNum, color: GREEN }}>
+                  {fmtMoney(r.commission, r.currency)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </>,
+      )}
+    </div>
   );
 }
 
@@ -425,6 +537,9 @@ function ShopTable({ rows }: { rows: ShopRow[] }) {
           <th style={th}>Status</th>
           <th style={{ ...th, textAlign: "right" }}>Cost (all-time)</th>
           <th style={{ ...th, textAlign: "right" }}>Try-ons (all)</th>
+          <th style={{ ...th, textAlign: "right" }}>Cart adds</th>
+          <th style={{ ...th, textAlign: "right" }}>Conv.</th>
+          <th style={{ ...th, textAlign: "right" }}>Cart value</th>
           <th style={th}>Installed</th>
           <th style={{ ...th, textAlign: "right" }}>Try-ons (cyc)</th>
           <th style={{ ...th, textAlign: "right" }}>Incl.</th>
@@ -446,6 +561,13 @@ function ShopTable({ rows }: { rows: ShopRow[] }) {
             <td style={{ ...td, color: r.isPaidActive ? GREEN : MUTED }}>{r.status}</td>
             <td style={{ ...tdNum, color: RED, fontWeight: 600 }}>{usd2(r.cogsAllTime)}</td>
             <td style={tdNum}>{r.tryOnsAllTime}</td>
+            <td style={{ ...tdNum, color: r.cartAdds > 0 ? GREEN : MUTED, fontWeight: r.cartAdds > 0 ? 600 : 400 }}>
+              {r.cartAdds || ""}
+            </td>
+            <td style={tdNum}>{pct(r.cartConversionPct)}</td>
+            <td style={tdNum}>
+              {r.attributedValue > 0 ? fmtMoney(r.attributedValue, r.cartCurrency) : ""}
+            </td>
             <td style={{ ...td, color: MUTED }}>{fmtDate(r.installedAt)}</td>
             <td style={tdNum}>{r.cycleTryOns}</td>
             <td style={tdNum}>{r.included}</td>
@@ -508,6 +630,7 @@ function Trend({ points }: { points: OwnerMetrics["trend"] }) {
           <th style={th}>Day</th>
           <th style={{ ...th, textAlign: "right" }}>Try-ons</th>
           <th style={{ ...th, textAlign: "right" }}>OK</th>
+          <th style={{ ...th, textAlign: "right" }}>Cart adds</th>
           <th style={{ ...th, textAlign: "right" }}>COGS</th>
           <th style={th}>Cost</th>
         </tr>
@@ -518,6 +641,9 @@ function Trend({ points }: { points: OwnerMetrics["trend"] }) {
             <td style={td}>{p.day}</td>
             <td style={tdNum}>{p.tryons}</td>
             <td style={tdNum}>{p.ok}</td>
+            <td style={{ ...tdNum, color: p.cartAdds > 0 ? GREEN : MUTED }}>
+              {p.cartAdds || ""}
+            </td>
             <td style={tdNum}>{usd2(p.cogs)}</td>
             <td style={{ ...td, width: "40%" }}>
               <div

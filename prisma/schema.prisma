@@ -94,6 +94,34 @@ model UsageLog {
   @@index([shop, status, cycleStart])
 }
 
+// Tool-driven add-to-cart attribution. One row per try-on result that a shopper
+// added to their cart from the try-on widget (extensions/tryon-button), reported
+// by a signed app-proxy beacon AFTER the storefront /cart/add.js succeeds. Keyed
+// by the originating try-on `requestId` so it is idempotent (a result added
+// twice counts once) and so it can only be written for a real generation that
+// already exists in UsageLog — this prevents arbitrary inflation. Holds NO
+// customer-identifiable data: just the shop, the product/variant added, and the
+// price captured at add time (the merchant's own catalog data). Powers the
+// add-to-cart count + attributed cart value + estimated commission on /metrics.
+model CartEvent {
+  id            String   @id @default(cuid())
+  shop          String
+  requestId     String // the try-on request whose result was added (joins UsageLog.requestId)
+  plan          String // plan at the time of the try-on (copied from the matched UsageLog row)
+  productHandle String?
+  variantId     String?
+  quantity      Int      @default(1)
+  unitPrice     Float? // per-unit price in shop-currency major units, at add time
+  lineValue     Float? // quantity * unitPrice (denormalized for fast SUM)
+  currency      String? // shop currency code at add time, e.g. "USD"
+  cycleStart    DateTime // copied from the matched UsageLog row (the try-on's billing cycle)
+  createdAt     DateTime @default(now())
+
+  @@unique([shop, requestId])
+  @@index([shop, createdAt])
+  @@index([createdAt])
+}
+
 model RateLimitBucket {
   key         String
   tier        String

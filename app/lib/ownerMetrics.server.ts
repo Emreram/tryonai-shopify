@@ -13,6 +13,7 @@ import {
   isPlanKey,
   type PlanKey,
 } from "./plans";
+import { commissionPct, commissionRate } from "./commission";
 
 // Only "active" subscriptions are recognized as revenue. pending/frozen/etc.
 // are NOT collecting reliably, so counting them would overstate profit — we
@@ -38,6 +39,11 @@ export interface ShopRow {
   cogsAllTime: number;
   tryOnsAllTime: number;
   blockedAllTime: number; // non-"ok" rows (cap_reached, rate_limited, error, ...)
+  cartAdds: number; // tool-driven add-to-carts, all-time
+  cartAddsCycle: number; // tool-driven add-to-carts in the shop's current cycle
+  attributedValue: number; // summed cart value the tool drove (shop currency)
+  cartCurrency: string | null; // dominant currency of this shop's cart events
+  cartConversionPct: number | null; // cartAdds / tryOnsAllTime * 100
   category: ShopCategory;
   installedAt: string | null; // ISO date; null if no Shop record exists
 }
@@ -68,6 +74,16 @@ export interface DayPoint {
   tryons: number;
   ok: number;
   cogs: number;
+  cartAdds: number; // tool-driven add-to-carts on this day
+}
+
+// Attributed cart value + estimated commission, grouped by currency so the owner
+// total is never silently summed across different currencies.
+export interface CurrencyValueRow {
+  currency: string; // ISO code, or "—" when the beacon couldn't capture one
+  count: number;
+  value: number;
+  commission: number;
 }
 
 export interface OwnerMetrics {
@@ -88,6 +104,16 @@ export interface OwnerMetrics {
     tryOnsOk: number;
     cogs: number;
     trialCac: number;
+  };
+  cart: {
+    addToCarts: number; // tool-driven add-to-carts, all-time
+    addToCartsCycle: number; // tool-driven add-to-carts, current cycle (all shops)
+    conversionRatePct: number | null; // add-to-carts / successful try-ons * 100
+    commissionPct: number; // the rate applied to attributed value (e.g. 8 = 8%)
+    primaryCurrency: string | null; // set only when exactly one currency is present
+    attributedValuePrimary: number | null; // total attributed value in that currency
+    commissionPrimary: number | null; // estimated commission in that currency
+    byCurrency: CurrencyValueRow[]; // always present; the honest per-currency breakdown
   };
   shops: ShopRow[];
   byCategory: CategoryRow[];
@@ -152,6 +178,52 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
     cycleByShop.set(r.shop, m);
   }
 
+  // --- Tool-driven add-to-cart attribution (CartEvent) -------------------------
+  // Per shop + currency: count + summed cart value. A shop is normally a single
+  // currency; keep the breakdown so the owner total is never silently summed
+  // across currencies. Also accumulate global per-currency totals here.
+  const cartByShopCurrency = await db.cartEvent.groupBy({
+    by: ["shop", "currency"],
+    _count: { _all: true },
+    _sum: { lineValue: true },
+  });
+  const cartAllByShop = new Map<
+    string,
+    { count: number; value: number; currencyByCount: Map<string, number> }
+  >();
+  const currencyTotals = new Map<string, { count: number; value: number }>();
+  for (const r of cartByShopCurrency) {
+    const cur = r.currency ?? "—";
+    const count = r._count._all;
+    const value = r._sum.lineValue ?? 0;
+    const agg = cartAllByShop.get(r.shop) ?? {
+      count: 0,
+      value: 0,
+      currencyByCount: new Map<string, number>(),
+    };
+    agg.count += count;
+    agg.value += value;
+    agg.currencyByCount.set(cur, (agg.currencyByCount.get(cur) ?? 0) + count);
+    cartAllByShop.set(r.shop, agg);
+    const ct = currencyTotals.get(cur) ?? { count: 0, value: 0 };
+    ct.count += count;
+    ct.value += value;
+    currencyTotals.set(cur, ct);
+  }
+
+  // Per shop + cycle bucket (count only), matched to the shop's current cycle
+  // exactly like the try-on counter above.
+  const cartByCycle = await db.cartEvent.groupBy({
+    by: ["shop", "cycleStart"],
+    _count: { _all: true },
+  });
+  const cartCycleByShop = new Map<string, Map<number, number>>();
+  for (const r of cartByCycle) {
+    const m = cartCycleByShop.get(r.shop) ?? new Map<number, number>();
+    m.set(r.cycleStart.getTime(), r._count._all);
+    cartCycleByShop.set(r.shop, m);
+  }
+
   // Every shop that ever installed (Shop rows survive uninstall — only status
   // flips to "uninstalled"), unioned with any shop that has UsageLog rows but
   // no Shop record (defensive, e.g. pre-Shop-model data).
@@ -159,6 +231,7 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
   const domains = new Set<string>(shops.map((s) => s.domain));
   for (const r of allOk) domains.add(r.shop);
   for (const r of nonOk) domains.add(r.shop);
+  for (const r of cartByShopCurrency) domains.add(r.shop);
 
   const rows: ShopRow[] = [...domains].map((domain) => {
     const s = shopByDomain.get(domain) ?? null;
@@ -185,6 +258,17 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
     const margin = revenue > 0 ? (profitCycle / revenue) * 100 : null;
     const allt = allOkByShop.get(domain);
 
+    const cartAll = cartAllByShop.get(domain);
+    const cartAdds = cartAll?.count ?? 0;
+    const attributedValue = cartAll?.value ?? 0;
+    const cartCurrency = cartAll ? dominantCurrency(cartAll.currencyByCount) : null;
+    const cartAddsCycle = cycleRef
+      ? cartCycleByShop.get(domain)?.get(cycleRef.getTime()) ?? 0
+      : 0;
+    const tryOnsAll = allt?.count ?? 0;
+    const cartConversionPct =
+      tryOnsAll > 0 ? (cartAdds / tryOnsAll) * 100 : null;
+
     let category: ShopCategory;
     if (status === "uninstalled") category = "Uninstalled";
     else if (isPaidActive) category = "Paying";
@@ -210,6 +294,11 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
       cogsAllTime: allt?.cogs ?? 0,
       tryOnsAllTime: allt?.count ?? 0,
       blockedAllTime: blockedByShop.get(domain) ?? 0,
+      cartAdds,
+      cartAddsCycle,
+      attributedValue,
+      cartCurrency,
+      cartConversionPct,
       category,
       installedAt: s?.installedAt ? s.installedAt.toISOString() : null,
     };
@@ -279,12 +368,39 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
     WHERE "createdAt" >= now() - interval '30 days'
     GROUP BY 1
     ORDER BY 1`;
-  const trend: DayPoint[] = trendRaw.map((r) => ({
-    day: r.day.toISOString().slice(0, 10),
-    tryons: Number(r.tryons),
-    ok: Number(r.ok),
-    cogs: Number(r.cogs),
-  }));
+  // Tool-driven add-to-carts per UTC day (last 30 days). Joined into the trend
+  // below by day string.
+  const cartTrendRaw = await db.$queryRaw<Array<{ day: Date; adds: bigint }>>`
+    SELECT date_trunc('day', "createdAt") AS day, count(*) AS adds
+    FROM "CartEvent"
+    WHERE "createdAt" >= now() - interval '30 days'
+    GROUP BY 1`;
+  const cartAddsByDay = new Map<string, number>();
+  for (const r of cartTrendRaw) {
+    cartAddsByDay.set(r.day.toISOString().slice(0, 10), Number(r.adds));
+  }
+
+  const trendByDay = new Map<string, DayPoint>();
+  for (const r of trendRaw) {
+    const day = r.day.toISOString().slice(0, 10);
+    trendByDay.set(day, {
+      day,
+      tryons: Number(r.tryons),
+      ok: Number(r.ok),
+      cogs: Number(r.cogs),
+      cartAdds: cartAddsByDay.get(day) ?? 0,
+    });
+  }
+  // A cart-add can land on a day with no new try-on (the shopper generated
+  // yesterday, added today), so those days must still appear.
+  for (const [day, adds] of cartAddsByDay) {
+    if (!trendByDay.has(day)) {
+      trendByDay.set(day, { day, tryons: 0, ok: 0, cogs: 0, cartAdds: adds });
+    }
+  }
+  const trend: DayPoint[] = [...trendByDay.values()].sort((a, b) =>
+    a.day < b.day ? -1 : a.day > b.day ? 1 : 0,
+  );
 
   // Group every shop into a category with its total cost.
   const catOrder: ShopCategory[] = ["Paying", "Trial", "Uninstalled", "Inactive"];
@@ -305,6 +421,30 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
     .map((c) => catMap.get(c)!)
     .filter((c) => c.shops > 0);
 
+  // Cart attribution totals + the per-currency value breakdown.
+  const cartAddsTotal = [...currencyTotals.values()].reduce(
+    (a, c) => a + c.count,
+    0,
+  );
+  let cartAddsCycleTotal = 0;
+  for (const r of rows) cartAddsCycleTotal += r.cartAddsCycle;
+  const rate = commissionRate();
+  const byCurrency: CurrencyValueRow[] = [...currencyTotals.entries()]
+    .map(([currency, v]) => ({
+      currency,
+      count: v.count,
+      value: v.value,
+      commission: v.value * rate,
+    }))
+    .sort((a, b) => b.value - a.value);
+  // A single headline value is only meaningful with exactly one real currency
+  // (the "—" bucket = beacons that couldn't capture one).
+  const knownCurrencies = byCurrency.filter(
+    (c) => c.currency !== "—" && c.value > 0,
+  );
+  const primary = knownCurrencies.length === 1 ? knownCurrencies[0] : null;
+  const tryOnsOkAllTime = totalAgg._count._all;
+
   return {
     generatedAtUtc: new Date().toISOString(),
     totals: {
@@ -324,9 +464,34 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
       cogs: totalAgg._sum.costUsd ?? 0,
       trialCac: trialAgg._sum.costUsd ?? 0,
     },
+    cart: {
+      addToCarts: cartAddsTotal,
+      addToCartsCycle: cartAddsCycleTotal,
+      conversionRatePct:
+        tryOnsOkAllTime > 0 ? (cartAddsTotal / tryOnsOkAllTime) * 100 : null,
+      commissionPct: commissionPct(),
+      primaryCurrency: primary?.currency ?? null,
+      attributedValuePrimary: primary?.value ?? null,
+      commissionPrimary: primary?.commission ?? null,
+      byCurrency,
+    },
     shops: rows,
     byCategory,
     ledger: ledgerRows,
     trend,
   };
+}
+
+// Pick the currency a shop's cart events are mostly in (a shop occasionally
+// changes currency, so we report the dominant one for the per-shop row).
+function dominantCurrency(byCount: Map<string, number>): string | null {
+  let best: string | null = null;
+  let bestN = -1;
+  for (const [cur, n] of byCount) {
+    if (n > bestN) {
+      best = cur;
+      bestN = n;
+    }
+  }
+  return best;
 }
