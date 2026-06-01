@@ -42,8 +42,10 @@ interface LoaderData {
   planPageUrl: string;
 }
 
-const TRYON_EXTENSION_UID = "53b5dfb4-3bb4-0954-72aa-7e751170befc5b13a1dd";
-const TRYON_EXTENSION_HANDLE = "tryon-button";
+// Deep-link handle = the app block's Liquid filename
+// (extensions/tryon-button/blocks/tryon_button.liquid) — note underscores, and
+// distinct from the "tryon-button" extension directory name.
+const TRYON_BLOCK_HANDLE = "tryon_button";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -112,7 +114,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-  const themeEditorUrl = `https://${shop}/admin/themes/current/editor?context=apps&template=product&activateAppId=${TRYON_EXTENSION_UID}/${TRYON_EXTENSION_HANDLE}`;
+  // The Try-On widget is an app BLOCK (its schema targets "section"), not an app
+  // embed. The embed-activation form (`context=apps&activateAppId=...`) makes the
+  // theme editor hunt for an app embed that doesn't exist -> "App embed does not
+  // exist" toast. App blocks use `addAppBlockId={api_key}/{handle}` where api_key
+  // is the app's client_id (== SHOPIFY_API_KEY, guaranteed present by the parent
+  // app.tsx loader) and handle is the block's Liquid filename. `mainSection` drops
+  // the block straight into the product template's main section (by Add to cart).
+  const apiKey = process.env.SHOPIFY_API_KEY ?? "";
+  const themeEditorUrl =
+    `https://${shop}/admin/themes/current/editor` +
+    `?template=product&addAppBlockId=${apiKey}/${TRYON_BLOCK_HANDLE}&target=mainSection`;
 
   const data: LoaderData = {
     shop,
@@ -265,7 +277,18 @@ export default function Index() {
       <s-section slot="aside" heading="Plan">
         <s-stack direction="block" gap="base">
           <s-paragraph>
-            {PLAN_DISPLAY[data.plan]} - {statusLabel(data.status)}
+            {/*
+              On the trial the merchant has no paid subscription, so the raw
+              billing status is "inactive" — showing "Trial - Inactive" next to
+              a "13 days remaining" banner reads as broken. Reflect the trial's
+              own state instead; paid plans keep the live subscription status.
+            */}
+            {PLAN_DISPLAY[data.plan]} -{" "}
+            {data.onTrial
+              ? data.trialDaysRemaining > 0
+                ? "Active"
+                : "Expired"
+              : statusLabel(data.status)}
           </s-paragraph>
           <s-paragraph>
             {PLANS[data.plan].included.toLocaleString("en-US")} try-ons / month
