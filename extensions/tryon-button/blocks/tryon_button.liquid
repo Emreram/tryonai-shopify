@@ -6,17 +6,18 @@
 {% endif %}
 
 {% assign tryon_variant_id = product.selected_or_first_available_variant.id %}
-{% assign tryon_accent = block.settings.accent_color | default: '#a8341a' %}
+{% assign tryon_accent = block.settings.accent_color %}
 
 {% if product %}
 <div
   class="tryonai-root"
   data-stage="idle"
+  data-theme="{{ block.settings.ui_theme | default: 'atelier' }}"
   data-product-handle="{{ product.handle }}"
   data-product-title="{{ product.title | escape }}"
   data-product-image-url="{% if tryon_product_image %}{{ tryon_product_image | image_url: width: 1024 }}{% endif %}"
   data-product-variant-id="{{ tryon_variant_id }}"
-  style="--tryonai-accent: {{ tryon_accent }};"
+  {% if tryon_accent != blank %}style="--tryonai-accent: {{ tryon_accent }};"{% endif %}
   {{ block.shopify_attributes }}
 >
   <button type="button" class="tryonai-launcher" aria-haspopup="dialog">
@@ -189,6 +190,18 @@
   "target": "section",
   "settings": [
     {
+      "type": "select",
+      "id": "ui_theme",
+      "label": "Style",
+      "info": "Visual look of the try-on button and modal. Only you (the store owner) can change this; shoppers can't.",
+      "options": [
+        { "value": "atelier", "label": "Atelier — warm linen (default)" },
+        { "value": "noir", "label": "Noir — midnight dark" },
+        { "value": "gallery", "label": "Gallery — clean minimal" }
+      ],
+      "default": "atelier"
+    },
+    {
       "type": "text",
       "id": "button_label",
       "label": "Button label",
@@ -209,8 +222,7 @@
     {
       "type": "color",
       "id": "accent_color",
-      "label": "Accent color",
-      "default": "#a8341a"
+      "label": "Accent color (optional — overrides the style's accent)"
     }
   ]
 }

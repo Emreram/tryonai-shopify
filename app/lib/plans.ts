@@ -8,10 +8,10 @@ export interface PlanDefinition {
 }
 
 export const PLANS: Record<PlanKey, PlanDefinition> = {
-  trial:   { price: 0,   included: 30,   overage: null, capMultiplier: 1   },
-  starter: { price: 49,  included: 300,  overage: 0.18, capMultiplier: 1.5 },
-  growth:  { price: 129, included: 1200, overage: 0.15, capMultiplier: 1.5 },
-  scale:   { price: 349, included: 3000, overage: 0.15, capMultiplier: 1.5 },
+  trial:   { price: 0,     included: 30,  overage: null, capMultiplier: 1   },
+  starter: { price: 8.99,  included: 60,  overage: 0.20, capMultiplier: 1.5 },
+  growth:  { price: 29.99, included: 200, overage: 0.18, capMultiplier: 1.5 },
+  scale:   { price: 99.99, included: 650, overage: 0.16, capMultiplier: 1.5 },
 };
 
 export const PLAN_KEYS: PlanKey[] = ["trial", "starter", "growth", "scale"];

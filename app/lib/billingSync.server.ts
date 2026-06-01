@@ -118,8 +118,9 @@ function planFromSubscription(
   if (hinted) return hinted;
 
   // 2. Exact recurring price. Managed Pricing reports the configured plan price
-  //    ($49/$129/$349) verbatim, so it's an exact, deterministic match — more
-  //    reliable than the name, which can be renamed or localized.
+  //    ($8.99/$29.99/$99.99) verbatim as a decimal, so it's an exact,
+  //    deterministic match — more reliable than the name, which can be renamed
+  //    or localized.
   const amount = recurringAmount(sub);
   const byPrice = PAID_PLAN_KEYS.find((key) => PLANS[key].price === amount);
   if (byPrice) return byPrice;

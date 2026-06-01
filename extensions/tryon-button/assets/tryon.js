@@ -93,6 +93,7 @@
       const accent = root.style.getPropertyValue("--tryonai-accent");
       if (accent) modal.style.setProperty("--tryonai-accent", accent);
       modal.dataset.stage = root.dataset.stage || "idle";
+      if (root.dataset.theme) modal.dataset.theme = root.dataset.theme;
       modal.dataset.tryonaiPortaled = "true";
 
       // Clean up stale portaled modals from prior section re-renders
@@ -642,13 +643,18 @@
         });
         if (!res.ok || !res.body) {
           let errMsg = "Generation failed";
+          let errCode = null;
           let retryAfterSec = null;
           try {
             const j = await res.json();
+            errCode = j.error || null;
             errMsg = j.error || errMsg;
             if (typeof j.retryAfter === "number") retryAfterSec = j.retryAfter;
           } catch (_) { /* not JSON, keep default */ }
-          if (res.status === 429 || errMsg === "rate_limited") {
+          // Branch on the explicit error code, NOT the HTTP status: both
+          // `rate_limited` and `cap_reached` are returned as 429, so a
+          // status-only check mislabels a hit monthly cap as a short throttle.
+          if (errCode === "rate_limited") {
             const header = res.headers.get("Retry-After");
             if (retryAfterSec === null && header) {
               const parsed = parseInt(header, 10);
@@ -662,6 +668,14 @@
                   : "a few minutes";
             throw new Error(
               `Too many try-ons in a short time. Please wait ${waitHint} and try again.`,
+            );
+          }
+          // Store-level limits the shopper can't resolve (the merchant's free
+          // trial is used up, or the plan's monthly allowance is reached).
+          // Show a graceful message instead of leaking the raw error token.
+          if (errCode === "trial_expired" || errCode === "cap_reached") {
+            throw new Error(
+              "Virtual try-on is temporarily unavailable for this store. Please check back soon.",
             );
           }
           throw new Error(errMsg);
@@ -1170,9 +1184,11 @@
   function pickSizeFromRatio(width, height) {
     if (!width || !height) return "1024x1536";
     const ratio = width / height;
-    if (ratio < 0.95) return "1024x1536";
     if (ratio > 1.05) return "1536x1024";
-    return "1024x1024";
+    // Portrait and near-square both map to 1024x1536. Square (1024x1024) is no
+    // longer offered — it is the most expensive output path, and the server
+    // rejects it anyway, falling back to 1024x1536.
+    return "1024x1536";
   }
 
   // Decode the file once, downsample to maxEdge if oversized, and re-encode as

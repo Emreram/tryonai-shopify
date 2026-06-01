@@ -3,10 +3,20 @@
 // Run after the first 1,000 successful production generations:
 //   cd tryonaishopfy && npx tsx scripts/validate-cost-median.ts
 //
-// Decision matrix (per Chapter 3 plan):
-//   median <= $0.06  -> margins healthy; consider lowering Starter overage from $0.18.
-//   median in [$0.06, $0.10]  -> ship as-is.
-//   median >= $0.10  -> BLOCK App Store listing; raise plan prices in app/lib/plans.server.ts.
+// NOTE: costUsd now records the TRUE all-in cost per try-on (final pass + the
+// low-quality preview pass), so this median reflects real COGS, not just the
+// final pass. The pricing ladder ($8.99/60, $29.99/200, $99.99/650; overage
+// $0.20/$0.18/$0.16) was designed against a strict $0.115 COGS, where every
+// tier's per-included revenue is ~$0.15 and the lowest overage rate is $0.16.
+//
+// Decision matrix (true all-in COGS):
+//   median <= $0.08  -> margins healthy; room to raise included allowances
+//                       (Phase 2: drop the preview pass) or lower overage.
+//   median in [$0.08, $0.13]  -> ship as-is; priced for strict $0.115, profitable.
+//   median >= $0.13  -> INVESTIGATE: approaching per-included revenue (~$0.15)
+//                       and the $0.16 overage floor. Confirm the size cost-cap is
+//                       active (no 1024x1024), then drop the preview pass or
+//                       re-cut included counts in app/lib/plans.ts.
 //
 // Also reports the p95 and the input-vs-output token mix so you can see whether
 // input image tokens are the dominant cost driver (the task spec flags this as a known risk).
@@ -61,14 +71,14 @@ async function main() {
   const medianLatencyMs = latencies.length ? pct(latencies, 0.5) : null;
 
   let recommendation: string;
-  if (medianCost <= 0.06) {
+  if (medianCost <= 0.08) {
     recommendation =
-      "MARGINS_HEALTHY: consider lowering Starter overage from $0.18.";
-  } else if (medianCost >= 0.1) {
+      "MARGINS_HEALTHY: room to raise included allowances (drop the preview pass) or lower overage.";
+  } else if (medianCost >= 0.13) {
     recommendation =
-      "BLOCK_LISTING: raise plan prices in app/lib/plans.server.ts before App Store goes live.";
+      "INVESTIGATE: median nearing per-included revenue (~$0.15) / $0.16 overage floor. Confirm the size cost-cap is active, then drop the preview pass or re-cut included counts in app/lib/plans.ts.";
   } else {
-    recommendation = "SHIP_AS_IS: placeholder was conservative-enough.";
+    recommendation = "SHIP_AS_IS: within the strict $0.115 design envelope.";
   }
 
   console.log(

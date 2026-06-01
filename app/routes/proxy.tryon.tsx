@@ -73,8 +73,12 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
 ]);
+// 1024x1024 (square) is intentionally NOT accepted as an input size: it is the
+// most expensive output path (~$0.092/try-on vs ~$0.075 portrait) and squeezes
+// plan margins. Square selfies fall back to DEFAULT_SIZE (1024x1536) at the
+// validation step below. The low-quality PREVIEW pass still renders at 1024x1024
+// internally (see previewSizeFor in openai.server.ts) — that is separate and cheap.
 const SUPPORTED_SIZES = new Set([
-  "1024x1024",
   "1024x1536",
   "1536x1024",
 ] as const);
@@ -440,7 +444,12 @@ export async function action({ request }: ActionFunctionArgs) {
                   requestId: reqId,
                   openaiRequestId: t.requestId ?? null,
                   plan,
-                  costUsd: computeCostUsd(t.usage),
+                  // True COGS = final (medium) pass + the always-on low-quality
+                  // preview pass. The preview was previously uncounted, so costUsd
+                  // understated real cost by ~30%; the daily cost ceiling and any
+                  // pricing validation depend on this being the full per-try-on cost.
+                  costUsd:
+                    computeCostUsd(t.medium.usage) + computeCostUsd(t.low.usage),
                   inputTokens,
                   outputTokens,
                   openaiMs,

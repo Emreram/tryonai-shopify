@@ -36,6 +36,47 @@
   text-rendering: optimizeLegibility;
 }
 
+/* =================================================================
+   THEME VARIANTS — merchant-selectable via the block's "Style"
+   dropdown (data-theme on .tryonai-root). Atelier is the base block
+   above, so it needs no override. Each variant only re-maps the
+   color/font/shadow tokens; layout, components and behavior are shared.
+   The portaled modal (tryon.js) carries data-theme so these apply there too.
+   ================================================================= */
+.tryonai-root[data-theme="noir"] {
+  --tryonai-bg:           #14110f;
+  --tryonai-bg-soft:      #1c1916;
+  --tryonai-bg-paper:     #221d19;
+  --tryonai-ink:          #f3ece0;
+  --tryonai-ink-soft:     #cfc6b8;
+  --tryonai-muted:        #9a8f80;
+  --tryonai-muted-soft:   #6f655a;
+  --tryonai-line:         #332c26;
+  --tryonai-line-strong:  #4a4138;
+  --tryonai-accent:       #c9a24b;
+  --tryonai-accent-soft:  #5a4a2a;
+  --tryonai-highlight:    #e0c069;
+  --tryonai-shadow: 0 1px 0 rgba(0,0,0,0.4), 0 30px 80px -28px rgba(0,0,0,0.7), 0 60px 140px -40px rgba(0,0,0,0.6);
+}
+
+.tryonai-root[data-theme="gallery"] {
+  --tryonai-bg:           #f6f6f4;
+  --tryonai-bg-soft:      #eeeeec;
+  --tryonai-bg-paper:     #ffffff;
+  --tryonai-ink:          #111316;
+  --tryonai-ink-soft:     #2a2d31;
+  --tryonai-muted:        #6b7177;
+  --tryonai-muted-soft:   #9aa0a6;
+  --tryonai-line:         #e2e3e1;
+  --tryonai-line-strong:  #c2c5c3;
+  --tryonai-accent:       #3457d5;
+  --tryonai-accent-soft:  #d7def9;
+  --tryonai-highlight:    #111316;
+  --tryonai-serif: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --tryonai-mono:  ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --tryonai-shadow: 0 1px 0 rgba(17,19,22,0.04), 0 24px 70px -30px rgba(17,19,22,0.30), 0 50px 120px -45px rgba(17,19,22,0.22);
+}
+
 .tryonai-root *,
 .tryonai-root *::before,
 .tryonai-root *::after { box-sizing: border-box; }
@@ -416,7 +457,7 @@
     transform 280ms var(--tryonai-ease);
 }
 .tryonai-drop:hover {
-  background: #fff;
+  background: var(--tryonai-bg-paper);
   border-color: var(--tryonai-ink);
 }
 .tryonai-drop.is-dragover {
@@ -594,7 +635,7 @@
   padding: 14px 16px;
   border: 1px solid var(--tryonai-line);
   border-radius: 6px;
-  background: rgba(255,255,255,0.4);
+  background: color-mix(in srgb, var(--tryonai-bg-paper) 40%, transparent);
   cursor: pointer;
   position: relative;
 }
@@ -708,7 +749,7 @@
   transition: background 220ms var(--tryonai-ease), transform 200ms var(--tryonai-ease), color 220ms var(--tryonai-ease);
   -webkit-tap-highlight-color: transparent;
 }
-.tryonai-cta:not(:disabled):hover { background: #000; }
+.tryonai-cta:not(:disabled):hover { background: color-mix(in srgb, var(--tryonai-ink) 82%, var(--tryonai-accent)); }
 .tryonai-cta:not(:disabled):active { transform: translateY(1px); }
 .tryonai-cta:disabled {
   background: var(--tryonai-bg-soft);
@@ -1006,7 +1047,7 @@
 }
 .tryonai-action--primary:hover {
   background: var(--tryonai-accent);
-  color: #fff;
+  color: var(--tryonai-bg-paper);
   border-color: var(--tryonai-accent);
 }
 .tryonai-action__arrow {
@@ -1016,7 +1057,7 @@
   margin-left: 6px;
 }
 .tryonai-action--primary:hover .tryonai-action__arrow {
-  color: #fff;
+  color: var(--tryonai-bg-paper);
   transform: translateX(6px);
 }
 
@@ -1024,7 +1065,23 @@
    RESPONSIVE
    ================================================================= */
 @media (max-width: 560px) {
-  .tryonai-modal { padding: 10px; }
+  /* Respect the device safe areas (notch / status bar / home indicator). Without
+     this, the centered panel can sit under the status bar on phones, pushing the
+     top bar — and its ✕ close button — out of reach. This is the mobile-only
+     "can't exit the widget" bug: the ✕ exists and works, it's just untappable
+     because it's behind the device chrome. */
+  .tryonai-modal {
+    padding:
+      max(10px, env(safe-area-inset-top, 0px))
+      max(10px, env(safe-area-inset-right, 0px))
+      max(10px, env(safe-area-inset-bottom, 0px))
+      max(10px, env(safe-area-inset-left, 0px));
+  }
+  /* Never let the panel exceed the safe viewport. The top bar (✕) and bottom CTA
+     are fixed grid rows and the middle scrolls, so the ✕ stays visible at the top
+     instead of overflowing upward behind the status bar. */
+  .tryonai-panel { max-height: 100%; }
+  .tryonai-root[data-stage="reveal"] .tryonai-panel { height: 100%; }
   .tryonai-topbar { padding: 12px 12px; }
   .tryonai-content { padding: 4px 18px 8px; }
   .tryonai-bottombar { padding: 12px 18px 16px; }

@@ -130,29 +130,29 @@ Add **3 public plans** (data from [app/lib/plans.ts](tryonaishopfy/app/lib/plans
 
 **Plan 1 — Starter**
 - Display name: `Starter`
-- Price: `$49 USD / month`
+- Price: `$8.99 USD / month`
 - Trial: 14 days
 - Top features description:
 ```
-300 AI try-ons per month. $0.18 per extra try-on after the included allowance. 14-day free trial.
+60 AI try-ons per month. $0.20 per extra try-on after the included allowance. 14-day free trial.
 ```
 
 **Plan 2 — Growth**
 - Display name: `Growth`
-- Price: `$129 USD / month`
+- Price: `$29.99 USD / month`
 - Trial: 14 days
 - Top features description:
 ```
-1,200 AI try-ons per month. $0.15 per extra try-on after the included allowance. 14-day free trial.
+200 AI try-ons per month. $0.18 per extra try-on after the included allowance. 14-day free trial.
 ```
 
 **Plan 3 — Scale**
 - Display name: `Scale`
-- Price: `$349 USD / month`
+- Price: `$99.99 USD / month`
 - Trial: 14 days
 - Top features description:
 ```
-3,000 AI try-ons per month. $0.15 per extra try-on after the included allowance. 14-day free trial.
+650 AI try-ons per month. $0.16 per extra try-on after the included allowance. 14-day free trial.
 ```
 
 **Pricing info URL (optional):** leave empty
@@ -290,7 +290,7 @@ To test TryOnAI end-to-end:
 
 6. Test billing upgrade:
    - From the admin home, click "Choose a plan".
-   - You'll see the 3 paid plans: Starter ($49/mo, 300 try-ons), Growth ($129/mo, 1200 try-ons), Scale ($349/mo, 3000 try-ons). All plans include a 14-day free trial.
+   - You'll see the 3 paid plans: Starter ($8.99/mo, 60 try-ons), Growth ($29.99/mo, 200 try-ons), Scale ($99.99/mo, 650 try-ons). All plans include a 14-day free trial.
    - Selecting a plan opens Shopify's standard managed-billing approval screen.
 
 7. Test uninstall:
