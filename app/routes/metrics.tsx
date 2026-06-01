@@ -46,21 +46,30 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ah, bh);
 }
 
-function readCookie(header: string | null, name: string): string | null {
-  if (!header) return null;
+// Returns EVERY value for `name` in the Cookie header. The browser can send
+// multiple cookies with the same name at different paths (e.g. a stale
+// /metrics-scoped cookie from an older build alongside the current /-scoped
+// one); we must check all of them, not just the first.
+function readCookieValues(header: string | null, name: string): string[] {
+  if (!header) return [];
+  const out: string[] = [];
   for (const part of header.split(/;\s*/)) {
     const eq = part.indexOf("=");
-    if (eq > 0 && part.slice(0, eq) === name) return part.slice(eq + 1);
+    if (eq > 0 && part.slice(0, eq) === name) out.push(part.slice(eq + 1));
   }
-  return null;
+  return out;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const secret = ownerSecret();
   if (!secret) throw new Response("Not Found", { status: 404 });
 
-  const token = readCookie(request.headers.get("Cookie"), COOKIE_NAME);
-  if (token && timingSafeEqualStr(token, ownerToken(secret))) {
+  const want = ownerToken(secret);
+  const authed = readCookieValues(
+    request.headers.get("Cookie"),
+    COOKIE_NAME,
+  ).some((v) => timingSafeEqualStr(v, want));
+  if (authed) {
     const metrics = await buildOwnerMetrics();
     return { authed: true as const, metrics };
   }
@@ -77,8 +86,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: "Incorrect password." };
   }
   const secureFlag = process.env.NODE_ENV === "production" ? " Secure;" : "";
-  const cookie = `${COOKIE_NAME}=${ownerToken(secret)}; Path=/; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=${COOKIE_MAX_AGE}`;
-  return redirect("/metrics", { headers: { "Set-Cookie": cookie } });
+  const headers = new Headers();
+  headers.append(
+    "Set-Cookie",
+    `${COOKIE_NAME}=${ownerToken(secret)}; Path=/; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=${COOKIE_MAX_AGE}`,
+  );
+  // Delete any legacy /metrics-scoped cookie from older builds — same name at a
+  // more-specific path would otherwise shadow the new one and break login.
+  headers.append(
+    "Set-Cookie",
+    `${COOKIE_NAME}=; Path=/metrics; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=0`,
+  );
+  return redirect("/metrics", { headers });
 };
 
 // ---------------------------------------------------------------------------
