@@ -6,13 +6,7 @@
 // — see the disclaimer rendered below and app/lib/ownerMetrics.server.ts.
 
 import crypto from "node:crypto";
-import {
-  Form,
-  redirect,
-  createCookie,
-  useActionData,
-  useLoaderData,
-} from "react-router";
+import { redirect, useActionData, useLoaderData } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 
 import {
@@ -32,15 +26,16 @@ function ownerSecret(): string | null {
   return s && s.length > 0 ? s : null;
 }
 
-function ownerCookie(secret: string) {
-  return createCookie("__tryonai_owner", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/metrics",
-    maxAge: 60 * 60 * 24 * 7, // 7 days
-    secrets: [secret],
-  });
+const COOKIE_NAME = "__tryonai_owner";
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+
+// Deterministic auth token derived from the secret, so the raw secret never
+// rides in the cookie. Fixed 64-hex chars.
+function ownerToken(secret: string): string {
+  return crypto
+    .createHmac("sha256", secret)
+    .update("owner-dashboard-v1")
+    .digest("hex");
 }
 
 // Constant-time compare over fixed-length SHA-256 digests (same primitive as
@@ -51,12 +46,21 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ah, bh);
 }
 
+function readCookie(header: string | null, name: string): string | null {
+  if (!header) return null;
+  for (const part of header.split(/;\s*/)) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq) === name) return part.slice(eq + 1);
+  }
+  return null;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const secret = ownerSecret();
   if (!secret) throw new Response("Not Found", { status: 404 });
 
-  const parsed = await ownerCookie(secret).parse(request.headers.get("Cookie"));
-  if (parsed && parsed.ok === true) {
+  const token = readCookie(request.headers.get("Cookie"), COOKIE_NAME);
+  if (token && timingSafeEqualStr(token, ownerToken(secret))) {
     const metrics = await buildOwnerMetrics();
     return { authed: true as const, metrics };
   }
@@ -72,8 +76,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!timingSafeEqualStr(password, secret)) {
     return { error: "Incorrect password." };
   }
-  const cookieHeader = await ownerCookie(secret).serialize({ ok: true });
-  return redirect("/metrics", { headers: { "Set-Cookie": cookieHeader } });
+  const secureFlag = process.env.NODE_ENV === "production" ? " Secure;" : "";
+  const cookie = `${COOKIE_NAME}=${ownerToken(secret)}; Path=/; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=${COOKIE_MAX_AGE}`;
+  return redirect("/metrics", { headers: { "Set-Cookie": cookie } });
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +106,13 @@ const DT = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
   hour12: false,
 });
+const DATE = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  timeZone: "UTC",
+});
+const fmtDate = (iso: string | null) => (iso ? DATE.format(new Date(iso)) : "—");
 
 export default function Metrics() {
   const data = useLoaderData<typeof loader>();
@@ -127,7 +139,7 @@ function LoginForm({ error }: { error?: string }) {
       <p style={{ color: MUTED, fontSize: 14 }}>
         Private dashboard. Enter the owner password to continue.
       </p>
-      <Form method="post" style={{ marginTop: "1rem" }}>
+      <form method="post" action="/metrics" style={{ marginTop: "1rem" }}>
         <input
           type="password"
           name="password"
@@ -159,7 +171,7 @@ function LoginForm({ error }: { error?: string }) {
         >
           Enter
         </button>
-      </Form>
+      </form>
       {error ? (
         <p style={{ color: RED, fontSize: 14, marginTop: "0.75rem" }}>{error}</p>
       ) : null}
@@ -236,7 +248,10 @@ function Dashboard({ m }: { m: OwnerMetrics }) {
         <Card label="Trial CAC burn" value={money(-m.allTime.trialCac)} color={RED} />
       </CardRow>
 
-      <SectionTitle>Per shop (current cycle)</SectionTitle>
+      <SectionTitle>Shops by category</SectionTitle>
+      <CategoryTable rows={m.byCategory} />
+
+      <SectionTitle>Per shop — every install, sorted by all-time cost</SectionTitle>
       <ShopTable rows={m.shops} />
 
       <SectionTitle>Recent try-ons (latest 100)</SectionTitle>
@@ -331,6 +346,54 @@ function tableWrap(children: React.ReactNode) {
   );
 }
 
+function catColor(c: string): string {
+  if (c === "Paying") return GREEN;
+  if (c === "Trial") return "#b45309";
+  return MUTED;
+}
+
+function CategoryTable({ rows }: { rows: OwnerMetrics["byCategory"] }) {
+  if (rows.length === 0) return <Empty>No shops yet.</Empty>;
+  const totalShops = rows.reduce((a, r) => a + r.shops, 0);
+  const totalCost = rows.reduce((a, r) => a + r.cogsAllTime, 0);
+  const totalMrr = rows.reduce((a, r) => a + r.mrr, 0);
+  return tableWrap(
+    <>
+      <thead>
+        <tr>
+          <th style={th}>Category</th>
+          <th style={{ ...th, textAlign: "right" }}>Shops</th>
+          <th style={{ ...th, textAlign: "right" }}>Try-ons (all-time)</th>
+          <th style={{ ...th, textAlign: "right" }}>Cost (all-time)</th>
+          <th style={{ ...th, textAlign: "right" }}>MRR</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.category}>
+            <td style={{ ...td, color: catColor(r.category), fontWeight: 600 }}>
+              {r.category}
+            </td>
+            <td style={tdNum}>{r.shops}</td>
+            <td style={tdNum}>{r.tryOnsAllTime.toLocaleString("en-US")}</td>
+            <td style={{ ...tdNum, color: RED }}>{usd2(r.cogsAllTime)}</td>
+            <td style={{ ...tdNum, color: r.mrr > 0 ? GREEN : MUTED }}>{usd2(r.mrr)}</td>
+          </tr>
+        ))}
+        <tr style={{ borderTop: `2px solid ${BORDER}` }}>
+          <td style={{ ...td, fontWeight: 700 }}>Total</td>
+          <td style={{ ...tdNum, fontWeight: 700 }}>{totalShops}</td>
+          <td style={tdNum} />
+          <td style={{ ...tdNum, fontWeight: 700, color: RED }}>{usd2(totalCost)}</td>
+          <td style={{ ...tdNum, fontWeight: 700, color: totalMrr > 0 ? GREEN : MUTED }}>
+            {usd2(totalMrr)}
+          </td>
+        </tr>
+      </tbody>
+    </>,
+  );
+}
+
 function ShopTable({ rows }: { rows: ShopRow[] }) {
   if (rows.length === 0) return <Empty>No shops yet.</Empty>;
   return tableWrap(
@@ -338,16 +401,18 @@ function ShopTable({ rows }: { rows: ShopRow[] }) {
       <thead>
         <tr>
           <th style={th}>Shop</th>
+          <th style={th}>Category</th>
           <th style={th}>Plan</th>
           <th style={th}>Status</th>
-          <th style={{ ...th, textAlign: "right" }}>Try-ons</th>
+          <th style={{ ...th, textAlign: "right" }}>Cost (all-time)</th>
+          <th style={{ ...th, textAlign: "right" }}>Try-ons (all)</th>
+          <th style={th}>Installed</th>
+          <th style={{ ...th, textAlign: "right" }}>Try-ons (cyc)</th>
           <th style={{ ...th, textAlign: "right" }}>Incl.</th>
           <th style={{ ...th, textAlign: "right" }}>Overage</th>
-          <th style={{ ...th, textAlign: "right" }}>Sub $</th>
-          <th style={{ ...th, textAlign: "right" }}>Over $</th>
-          <th style={{ ...th, textAlign: "right" }}>Revenue</th>
-          <th style={{ ...th, textAlign: "right" }}>COGS</th>
-          <th style={{ ...th, textAlign: "right" }}>Profit</th>
+          <th style={{ ...th, textAlign: "right" }}>Revenue (cyc)</th>
+          <th style={{ ...th, textAlign: "right" }}>COGS (cyc)</th>
+          <th style={{ ...th, textAlign: "right" }}>Profit (cyc)</th>
           <th style={{ ...th, textAlign: "right" }}>Margin</th>
         </tr>
       </thead>
@@ -355,13 +420,17 @@ function ShopTable({ rows }: { rows: ShopRow[] }) {
         {rows.map((r, i) => (
           <tr key={r.domain} style={{ background: i % 2 ? "#fafafa" : "#fff" }}>
             <td style={td}>{r.domain}</td>
+            <td style={{ ...td, color: catColor(r.category), fontWeight: 600 }}>
+              {r.category}
+            </td>
             <td style={td}>{r.planLabel}</td>
             <td style={{ ...td, color: r.isPaidActive ? GREEN : MUTED }}>{r.status}</td>
+            <td style={{ ...tdNum, color: RED, fontWeight: 600 }}>{usd2(r.cogsAllTime)}</td>
+            <td style={tdNum}>{r.tryOnsAllTime}</td>
+            <td style={{ ...td, color: MUTED }}>{fmtDate(r.installedAt)}</td>
             <td style={tdNum}>{r.cycleTryOns}</td>
             <td style={tdNum}>{r.included}</td>
             <td style={tdNum}>{r.overageUnits || ""}</td>
-            <td style={tdNum}>{usd2(r.subscriptionRev)}</td>
-            <td style={tdNum}>{usd2(r.overageRev)}</td>
             <td style={tdNum}>{usd2(r.revenue)}</td>
             <td style={tdNum}>{usd2(r.cogsCycle)}</td>
             <td style={{ ...tdNum, color: r.profitCycle >= 0 ? GREEN : RED, fontWeight: 600 }}>

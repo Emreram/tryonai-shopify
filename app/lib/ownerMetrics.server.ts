@@ -38,6 +38,18 @@ export interface ShopRow {
   cogsAllTime: number;
   tryOnsAllTime: number;
   blockedAllTime: number; // non-"ok" rows (cap_reached, rate_limited, error, ...)
+  category: ShopCategory;
+  installedAt: string | null; // ISO date; null if no Shop record exists
+}
+
+export type ShopCategory = "Paying" | "Trial" | "Uninstalled" | "Inactive";
+
+export interface CategoryRow {
+  category: ShopCategory;
+  shops: number;
+  tryOnsAllTime: number;
+  cogsAllTime: number; // total OpenAI cost this category has ever incurred
+  mrr: number; // current run-rate revenue (Paying only)
 }
 
 export interface LedgerRow {
@@ -78,6 +90,7 @@ export interface OwnerMetrics {
     trialCac: number;
   };
   shops: ShopRow[];
+  byCategory: CategoryRow[];
   ledger: LedgerRow[];
   trend: DayPoint[];
 }
@@ -139,15 +152,26 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
     cycleByShop.set(r.shop, m);
   }
 
-  const rows: ShopRow[] = shops.map((s) => {
-    const b = s.billing;
+  // Every shop that ever installed (Shop rows survive uninstall — only status
+  // flips to "uninstalled"), unioned with any shop that has UsageLog rows but
+  // no Shop record (defensive, e.g. pre-Shop-model data).
+  const shopByDomain = new Map(shops.map((s) => [s.domain, s]));
+  const domains = new Set<string>(shops.map((s) => s.domain));
+  for (const r of allOk) domains.add(r.shop);
+  for (const r of nonOk) domains.add(r.shop);
+
+  const rows: ShopRow[] = [...domains].map((domain) => {
+    const s = shopByDomain.get(domain) ?? null;
+    const b = s?.billing ?? null;
     const plan: PlanKey = isPlanKey(b?.plan) ? (b!.plan as PlanKey) : "trial";
     const def = PLANS[plan];
-    const status = b?.status ?? "inactive";
+    const status = b?.status ?? (s ? "inactive" : "unknown");
     // Mirror proxy.tryon.tsx's cycleStart fallback chain exactly.
     const cycleRef =
-      b?.currentCycleStart ?? b?.trialStartedAt ?? s.installedAt;
-    const bucket = cycleByShop.get(s.domain)?.get(cycleRef.getTime());
+      b?.currentCycleStart ?? b?.trialStartedAt ?? s?.installedAt ?? null;
+    const bucket = cycleRef
+      ? cycleByShop.get(domain)?.get(cycleRef.getTime())
+      : undefined;
     const cycleTryOns = bucket?.count ?? 0;
     const cogsCycle = bucket?.cogs ?? 0;
 
@@ -159,10 +183,17 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
     const revenue = subscriptionRev + overageRev;
     const profitCycle = revenue - cogsCycle;
     const margin = revenue > 0 ? (profitCycle / revenue) * 100 : null;
-    const allt = allOkByShop.get(s.domain);
+    const allt = allOkByShop.get(domain);
+
+    let category: ShopCategory;
+    if (status === "uninstalled") category = "Uninstalled";
+    else if (isPaidActive) category = "Paying";
+    else if (plan === "trial" && (status === "active" || status === "pending"))
+      category = "Trial";
+    else category = "Inactive";
 
     return {
-      domain: s.domain,
+      domain,
       plan,
       planLabel: PLAN_DISPLAY[plan] ?? plan,
       status,
@@ -178,11 +209,13 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
       margin,
       cogsAllTime: allt?.cogs ?? 0,
       tryOnsAllTime: allt?.count ?? 0,
-      blockedAllTime: blockedByShop.get(s.domain) ?? 0,
+      blockedAllTime: blockedByShop.get(domain) ?? 0,
+      category,
+      installedAt: s?.installedAt ? s.installedAt.toISOString() : null,
     };
   });
-  // Loss-makers first so problems surface at the top.
-  rows.sort((a, b) => a.profitCycle - b.profitCycle);
+  // Most expensive shops first — directly answers "how much does each cost me".
+  rows.sort((a, b) => b.cogsAllTime - a.cogsAllTime);
 
   const paidActiveByPlan: Record<string, number> = {};
   let trialShops = 0;
@@ -253,10 +286,29 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
     cogs: Number(r.cogs),
   }));
 
+  // Group every shop into a category with its total cost.
+  const catOrder: ShopCategory[] = ["Paying", "Trial", "Uninstalled", "Inactive"];
+  const catMap = new Map<ShopCategory, CategoryRow>(
+    catOrder.map((c) => [
+      c,
+      { category: c, shops: 0, tryOnsAllTime: 0, cogsAllTime: 0, mrr: 0 },
+    ]),
+  );
+  for (const r of rows) {
+    const cr = catMap.get(r.category)!;
+    cr.shops += 1;
+    cr.tryOnsAllTime += r.tryOnsAllTime;
+    cr.cogsAllTime += r.cogsAllTime;
+    if (r.isPaidActive) cr.mrr += r.subscriptionRev;
+  }
+  const byCategory = catOrder
+    .map((c) => catMap.get(c)!)
+    .filter((c) => c.shops > 0);
+
   return {
     generatedAtUtc: new Date().toISOString(),
     totals: {
-      shopsTotal: shops.length,
+      shopsTotal: rows.length,
       paidActiveByPlan,
       trialShops,
       mrr,
@@ -273,6 +325,7 @@ export async function buildOwnerMetrics(): Promise<OwnerMetrics> {
       trialCac: trialAgg._sum.costUsd ?? 0,
     },
     shops: rows,
+    byCategory,
     ledger: ledgerRows,
     trend,
   };
