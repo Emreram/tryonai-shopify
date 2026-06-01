@@ -29,10 +29,6 @@ import {
   putCachedTryOn,
   TRYON_CACHE_PROMPT_VERSION,
 } from "../lib/tryonCache.server";
-import {
-  FASHN_TRYON_MODEL,
-  generateTryOnFashnWithTiming,
-} from "../lib/fashn.server";
 import { createHash } from "node:crypto";
 
 type BlockReason =
@@ -105,13 +101,6 @@ const SSE_HEADERS = {
   Connection: "keep-alive",
   "X-Accel-Buffering": "no",
 } as const;
-
-function parseShadowSampleRate(): number {
-  const raw = process.env.FASHN_SHADOW_SAMPLE_RATE;
-  if (!raw) return 0;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.min(n, 1) : 0;
-}
 
 // Stable garment identity for the cache key: prefer the (normalized) Shopify CDN
 // URL the client resolved, so the same product image hits across sessions even
@@ -506,60 +495,6 @@ export async function action({ request }: ActionFunctionArgs) {
       let finalB64: string | null = null;
       sendFrame(`: tryonai stream open ${SSE_OPEN_PADDING}\n\n`);
       send({ kind: "meta", requestId: reqId });
-
-      // FASHN shadow pilot (B3): on a sampled fraction of real requests, run the
-      // FASHN provider in parallel purely to log latency/cost for the A/B
-      // decision. The shopper NEVER sees it and it never affects billing/cap.
-      // Default OFF (FASHN_SHADOW_SAMPLE_RATE unset/0). Awaited in `finally` so
-      // the data is captured before the function exits (it usually finishes well
-      // within the OpenAI window, adding ~0ms).
-      let shadowPromise: Promise<void> | null = null;
-      const shadowRate = parseShadowSampleRate();
-      if (
-        shadowRate > 0 &&
-        process.env.FASHN_API_KEY &&
-        Math.random() < shadowRate
-      ) {
-        const tShadowStart = performance.now();
-        shadowPromise = generateTryOnFashnWithTiming({
-          selfie: selfieBuf,
-          selfieMimeType: selfieMime,
-          garment: garmentBuf,
-          garmentMimeType: garmentMime,
-          size,
-          signal: generationAbortController.signal,
-        })
-          .then((r) => {
-            console.log(
-              JSON.stringify({
-                event: "fashn_shadow",
-                ok: true,
-                shop,
-                request_id: reqId,
-                model: FASHN_TRYON_MODEL,
-                size,
-                latency_ms: Math.round(performance.now() - tShadowStart),
-                cost_usd: r.costUsd,
-                credits_used: r.creditsUsed ?? null,
-                poll_count: r.timings.pollCount,
-              }),
-            );
-          })
-          .catch((err) => {
-            if (isAbortError(err)) return;
-            console.warn(
-              JSON.stringify({
-                event: "fashn_shadow",
-                ok: false,
-                shop,
-                request_id: reqId,
-                model: FASHN_TRYON_MODEL,
-                latency_ms: Math.round(performance.now() - tShadowStart),
-                error: err instanceof Error ? err.message : String(err),
-              }),
-            );
-          });
-      }
       try {
         for await (const event of generateTryOn({
           selfie: selfieBuf,
@@ -795,16 +730,6 @@ export async function action({ request }: ActionFunctionArgs) {
         }
         send({ kind: "error", error: `Try-on generation failed: ${msg}` });
       } finally {
-        // Capture the FASHN shadow result before the function exits (the shopper
-        // already has their image; this only keeps the function alive long
-        // enough to log the A/B data, usually ~0ms since FASHN finished first).
-        if (shadowPromise) {
-          try {
-            await shadowPromise;
-          } catch {
-            // already logged inside the shadow handler
-          }
-        }
         request.signal.removeEventListener("abort", abortGeneration);
         if (!streamCancelled) controller.close();
       }
