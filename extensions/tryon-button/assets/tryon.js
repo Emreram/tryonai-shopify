@@ -109,6 +109,7 @@
       selfieFile: null,
       uploadedGarment: null,
       detectedGarment: null,
+      detectedGarmentUrl: null,
       resolution: null,
       generating: false,
       lastResult: null,
@@ -390,6 +391,7 @@
       // Bust caches so the new image actually loads
       state.resolution = null;
       state.detectedGarment = null;
+      state.detectedGarmentUrl = null;
       state.uploadedGarment = null;
       itemBox.dataset.detected = "false";
       itemImage.removeAttribute("src");
@@ -528,6 +530,8 @@
     }
     function showDetectedGarment(file) {
       state.detectedGarment = file;
+      state.detectedGarmentUrl =
+        (file && typeof file.tryonaiSourceUrl === "string" && file.tryonaiSourceUrl) || null;
       itemImage.src = URL.createObjectURL(file);
       itemTitle.textContent = productTitle || "Detected item";
       itemBox.dataset.detected = "true";
@@ -615,6 +619,17 @@
       fd.append("garment", garmentForUpload, garmentForUpload.name || "garment.jpg");
       fd.append("size", size);
       if (productHandle) fd.append("product_handle", productHandle);
+      // Stable garment identity for the server-side result cache: when the
+      // garment is CDN-derived (NOT user-uploaded), send the canonical CDN URL
+      // the blob was fetched from so the cache can key on a stable URL instead
+      // of unstable bytes. User-uploaded garments send nothing — the server
+      // falls back to hashing the bytes. Guarded so a missing URL never throws.
+      if (!state.uploadedGarment) {
+        const garmentUrl = state.detectedGarmentUrl;
+        if (typeof garmentUrl === "string" && garmentUrl) {
+          fd.append("garment_url", garmentUrl);
+        }
+      }
 
       const controller = new AbortController();
       state.abortController = controller;
@@ -1049,7 +1064,13 @@
   async function resolveProductGarment({ productHandle, hintedImageUrl }) {
     const candidate = hintedImageUrl || (await lookupProductImage(productHandle));
     if (!candidate) return null;
-    return fetchAsFile(candidate, productHandle);
+    const file = await fetchAsFile(candidate, productHandle);
+    if (!file) return null;
+    // Stash the resolved CDN URL on the File so the caller can reuse the exact
+    // canonical URL the blob was fetched from (for stable result-cache keying)
+    // without re-resolving or refetching.
+    try { file.tryonaiSourceUrl = candidate; } catch (_) { /* non-fatal */ }
+    return file;
   }
 
   async function lookupProductImage(productHandle) {

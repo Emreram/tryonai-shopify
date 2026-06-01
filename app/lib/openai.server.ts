@@ -105,7 +105,18 @@ const FILE_EXTENSIONS_BY_MIME_TYPE: Record<string, string> = {
   "image/png": "png",
   "image/webp": "webp",
 };
-const PREVIEW_HEAD_START_MS = 1_000;
+// The low preview pass (quality "low", 1024x1024) is far faster than the medium
+// final pass (1024x1536), so it reliably finishes first WITHOUT a long head start.
+// This sleep delays the FINAL image 1:1, so keep it just long enough to let the
+// low pass register as the first reveal frame (clean low-res) ahead of medium's
+// noisy first partial — not a full second. Overridable for tuning/benchmarks.
+const PREVIEW_HEAD_START_MS = parseHeadStartMs(process.env.TRYON_PREVIEW_HEAD_START_MS, 250);
+
+function parseHeadStartMs(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
 
 const DEFAULT_PROMPT =
   "Photorealistic full-body editorial photograph: the person from the first image wearing the garment from the second image. Preserve the person's face, hair, skin tone, body proportions, and pose exactly. Keep the original background and lighting from the first image - do not invent a new scene. Fit the garment naturally with realistic fabric drape, wrinkles, and shadows that match the existing lighting direction. Match the garment's color, pattern, logos, stitching, and texture from the reference image precisely. No text, no watermarks. Studio-quality fashion editorial finish.";

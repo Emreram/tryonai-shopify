@@ -88,10 +88,17 @@ async function upsertTier(key: string, tier: Tier): Promise<UpsertRow> {
 }
 
 export async function checkAndIncrement(key: string): Promise<RateLimitResult> {
-  // Each tier's upsert is atomic at the row level (INSERT ... ON CONFLICT).
-  // We increment short first; if it's over, the hour tier is left untouched
-  // because no work happens on this request anyway.
-  const short = await upsertTier(key, "short");
+  // Each tier's upsert is atomic at the row level (INSERT ... ON CONFLICT), and
+  // the two tiers are independent rows, so we run both round-trips concurrently
+  // to shave one DB latency off the pre-generation hot path. A request that
+  // trips the short limit also counts against the hour window (both increment) —
+  // that is acceptable: it is still an attempt, and `decrement()` refunds both
+  // tiers for the key on abort. Short takes precedence in the verdict so the
+  // shopper sees the (shorter) short-tier retry hint first.
+  const [short, hour] = await Promise.all([
+    upsertTier(key, "short"),
+    upsertTier(key, "hour"),
+  ]);
   if (short.count > TIERS.short.count) {
     return {
       ok: false,
@@ -99,7 +106,6 @@ export async function checkAndIncrement(key: string): Promise<RateLimitResult> {
       retryAfter: secondsUntil(short.expiresAt),
     };
   }
-  const hour = await upsertTier(key, "hour");
   if (hour.count > TIERS.hour.count) {
     return {
       ok: false,

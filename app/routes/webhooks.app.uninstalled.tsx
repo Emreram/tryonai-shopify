@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { purgeShopTryOnCache } from "../lib/tryonCache.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, session, topic } = await authenticate.webhook(request);
@@ -27,6 +28,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       currentCycleEnd: null,
     },
   });
+
+  // Best-effort purge of cached customer-likeness images for this shop. Storage
+  // lives outside the DB writes above, so isolate failures here and never let
+  // them break the uninstall ACK.
+  try {
+    await purgeShopTryOnCache(shop);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "tryon_cache_purge_on_uninstall_failed",
+        shop,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
 
   return new Response();
 };

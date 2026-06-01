@@ -49,6 +49,7 @@ model MerchantSettings {
   buttonLabel         String   @default("Try it on")
   accentColor         String   @default("#000000")
   allowedProductTypes String   @default("[]")
+  cacheEnabled        Boolean  @default(true)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -101,5 +102,27 @@ model RateLimitBucket {
   expiresAt   DateTime
 
   @@id([key, tier])
+  @@index([expiresAt])
+}
+
+// Result cache for try-on generations (masterplan A3). Stores a pointer to the
+// generated image, which lives as a private object in Supabase Storage (EU,
+// same region as the DB) — the bytes are NOT kept in Postgres. The cached image
+// is customer likeness, so: keyed by a content hash (never by customer id),
+// scoped by shop, and TTL'd via expiresAt (default 14 days). Purged on shop
+// uninstall / shop redact and swept by a daily cron.
+model TryOnCache {
+  cacheKey    String   @id // sha256(promptVer|model|size|quality|shop|selfieHash|garmentIdentity)
+  shop        String
+  size        String
+  promptVer   String
+  model       String
+  storagePath String // object path within the private Supabase Storage bucket
+  bytes       Int
+  hits        Int      @default(0)
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  @@index([shop])
   @@index([expiresAt])
 }

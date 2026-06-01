@@ -22,6 +22,18 @@ import {
 } from "../lib/plans";
 import { refreshBillingState } from "../lib/billingSync.server";
 import { sendTryOnUsageEvent } from "../lib/appEvents.server";
+import {
+  cacheActive,
+  computeTryOnCacheKey,
+  getCachedTryOn,
+  putCachedTryOn,
+  TRYON_CACHE_PROMPT_VERSION,
+} from "../lib/tryonCache.server";
+import {
+  FASHN_TRYON_MODEL,
+  generateTryOnFashnWithTiming,
+} from "../lib/fashn.server";
+import { createHash } from "node:crypto";
 
 type BlockReason =
   | "trial_expired"
@@ -86,6 +98,49 @@ type TryOnSize = "1024x1024" | "1024x1536" | "1536x1024";
 const DEFAULT_SIZE: TryOnSize = "1024x1536";
 const DEFAULT_QUALITY: "low" | "medium" | "high" = "medium";
 const SSE_OPEN_PADDING = " ".repeat(64 * 1024);
+const SSE_HEADERS = {
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "Content-Encoding": "identity",
+  "Cache-Control": "no-cache, no-transform",
+  Connection: "keep-alive",
+  "X-Accel-Buffering": "no",
+} as const;
+
+function parseShadowSampleRate(): number {
+  const raw = process.env.FASHN_SHADOW_SAMPLE_RATE;
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 1) : 0;
+}
+
+// Stable garment identity for the cache key: prefer the (normalized) Shopify CDN
+// URL the client resolved, so the same product image hits across sessions even
+// though re-fetched bytes differ. Host is lowercased and the volatile query
+// string is dropped; the size-bearing path (e.g. ".._1024x..") is retained.
+function normalizeGarmentUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return `${u.host.toLowerCase()}${u.pathname}`;
+  } catch {
+    return raw.trim();
+  }
+}
+
+function cacheHitResponse(b64: string, reqId: string): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (payload: unknown) =>
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+      controller.enqueue(encoder.encode(`: tryonai stream open ${SSE_OPEN_PADDING}\n\n`));
+      send({ kind: "meta", requestId: reqId });
+      send({ kind: "completed", b64 });
+      send({ kind: "timing", event: "tryon_cache_hit", cached: true, request_id: reqId });
+      controller.close();
+    },
+  });
+  return new Response(stream, { headers: SSE_HEADERS });
+}
 
 function json(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
@@ -169,19 +224,48 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
 
-  const installedShop = await db.shop.findUnique({ where: { domain: shop } });
-  if (!installedShop) {
-    return json({ error: "shop_not_installed" }, { status: 403 });
-  }
+  // Start reading/parsing the multipart upload NOW so the body read overlaps
+  // with the billing + plan-cap DB gating below, instead of running strictly
+  // after it (this route previously parsed the body only after every gate).
+  // The rejection is pre-handled so an early gate return can't leave it dangling.
+  const formDataPromise = request.formData();
+  void formDataPromise.catch(() => {});
 
-  await refreshBillingState({ shop });
-
-  const billing = await db.billingState.findUnique({
+  // Resolve billing WITHOUT a Shopify Admin round-trip on the hot path. The
+  // cached BillingState row gates this request; a refresh is kicked off for the
+  // NEXT request in the background (refreshBillingState self-throttles to >=5min
+  // and only then calls the Admin API). We block on a synchronous refresh only
+  // when there is no cached row yet — the first-ever try-on for this shop, which
+  // also establishes the Shop/BillingState rows. A cached row implies the Shop
+  // row exists (BillingState.shop -> Shop.domain FK, cascade-deleted on remove),
+  // so it doubles as the "installed" check.
+  let billing = await db.billingState.findUnique({
     where: { shop },
     include: { shopRef: { include: { settings: true } } },
   });
   if (!billing) {
-    return json({ error: "shop_not_installed" }, { status: 403 });
+    const installedShop = await db.shop.findUnique({ where: { domain: shop } });
+    if (!installedShop) {
+      return json({ error: "shop_not_installed" }, { status: 403 });
+    }
+    await refreshBillingState({ shop });
+    billing = await db.billingState.findUnique({
+      where: { shop },
+      include: { shopRef: { include: { settings: true } } },
+    });
+    if (!billing) {
+      return json({ error: "shop_not_installed" }, { status: 403 });
+    }
+  } else {
+    void refreshBillingState({ shop }).catch((err) =>
+      console.warn(
+        JSON.stringify({
+          event: "billing_refresh_bg_failed",
+          shop,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      ),
+    );
   }
 
   const plan: PlanKey = isPlanKey(billing.plan) ? billing.plan : "trial";
@@ -190,15 +274,35 @@ export async function action({ request }: ActionFunctionArgs) {
     billing.currentCycleStart ?? billing.trialStartedAt ?? new Date(0);
   const reqId = requestId();
 
+  // Plan-gate reads (trial usage, cycle usage, daily spend) are independent, so
+  // run them concurrently and evaluate the verdicts in the original precedence
+  // order afterwards: trial_expired -> cap_reached -> cost_ceiling. Each branch's
+  // count is skipped (resolved to a no-op value) when it doesn't apply.
+  const cap = computeCap(plan, settings?.capOverride ?? null);
+  const ceilingRaw = process.env.DAILY_COST_CEILING_USD;
+  const ceiling = ceilingRaw ? Number(ceilingRaw) : 0;
+  const ceilingEnabled = Number.isFinite(ceiling) && ceiling > 0;
+  const startOfDay = new Date();
+  startOfDay.setUTCHours(0, 0, 0, 0);
+
+  const [trialCount, used, todaySpend] = await Promise.all([
+    plan === "trial"
+      ? db.usageLog.count({
+          where: { shop, createdAt: { gte: billing.trialStartedAt }, status: "ok" },
+        })
+      : Promise.resolve(0),
+    db.usageLog.count({ where: { shop, cycleStart, status: "ok" } }),
+    ceilingEnabled
+      ? db.usageLog.aggregate({
+          _sum: { costUsd: true },
+          where: { createdAt: { gte: startOfDay }, status: "ok" },
+        })
+      : Promise.resolve(null),
+  ]);
+
   if (plan === "trial") {
     const trialAge = Date.now() - billing.trialStartedAt.getTime();
-    const trialCount = await db.usageLog.count({
-      where: { shop, createdAt: { gte: billing.trialStartedAt }, status: "ok" },
-    });
-    if (
-      trialAge > TRIAL_DAYS * 86_400_000 ||
-      trialCount >= TRIAL_TRYONS
-    ) {
+    if (trialAge > TRIAL_DAYS * 86_400_000 || trialCount >= TRIAL_TRYONS) {
       await writeBlockedLog({
         shop,
         reqId,
@@ -219,10 +323,6 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
-  const cap = computeCap(plan, settings?.capOverride ?? null);
-  const used = await db.usageLog.count({
-    where: { shop, cycleStart, status: "ok" },
-  });
   if (used >= cap) {
     await writeBlockedLog({
       shop,
@@ -243,16 +343,8 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
 
-  const ceilingRaw = process.env.DAILY_COST_CEILING_USD;
-  const ceiling = ceilingRaw ? Number(ceilingRaw) : 0;
-  if (Number.isFinite(ceiling) && ceiling > 0) {
-    const startOfDay = new Date();
-    startOfDay.setUTCHours(0, 0, 0, 0);
-    const todaySpend = await db.usageLog.aggregate({
-      _sum: { costUsd: true },
-      where: { createdAt: { gte: startOfDay }, status: "ok" },
-    });
-    const spend = Number(todaySpend._sum.costUsd ?? 0);
+  if (ceilingEnabled) {
+    const spend = Number(todaySpend?._sum.costUsd ?? 0);
     if (spend >= ceiling) {
       console.error(
         JSON.stringify({
@@ -276,7 +368,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
   let formData: FormData;
   try {
-    formData = await request.formData();
+    formData = await formDataPromise;
   } catch {
     return json({ error: "Invalid form data" }, { status: 400 });
   }
@@ -327,6 +419,66 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const tValidated = performance.now();
 
+  // Result cache (A3): on a hit, re-serve the stored image instantly with no
+  // OpenAI spend. The garment identity prefers the client-sent CDN URL (stable
+  // across sessions) and falls back to a byte-hash for shopper-uploaded garments.
+  const cacheOn = cacheActive(settings?.cacheEnabled);
+  let cacheKey: string | null = null;
+  if (cacheOn) {
+    const garmentUrlRaw = formData.get("garment_url");
+    const garmentIdentity =
+      typeof garmentUrlRaw === "string" && garmentUrlRaw.trim().length > 0
+        ? "url:" + normalizeGarmentUrl(garmentUrlRaw)
+        : "bytes:" + createHash("sha256").update(garmentBuf).digest("hex");
+    cacheKey = computeTryOnCacheKey({
+      shop,
+      selfie: selfieBuf,
+      garmentIdentity,
+      size,
+      quality: DEFAULT_QUALITY,
+      promptVer: TRYON_CACHE_PROMPT_VERSION,
+      model: OPENAI_TRYON_MODEL,
+    });
+    const cached = await getCachedTryOn(cacheKey);
+    if (cached) {
+      // No model spend on a re-serve: refund the rate-limit slot, and log a
+      // `cache_hit` row (excluded from the cap query, which counts `ok`) so we
+      // never bill the merchant or consume their cap for a duplicate result.
+      if (rateLimitKey) await rateLimitDecrement(rateLimitKey);
+      console.log(
+        JSON.stringify({ event: "tryon_cache_hit", shop, request_id: reqId, size }),
+      );
+      try {
+        await db.usageLog.create({
+          data: {
+            shop,
+            requestId: reqId,
+            openaiRequestId: null,
+            plan,
+            costUsd: 0,
+            inputTokens: null,
+            outputTokens: null,
+            openaiMs: null,
+            status: "cache_hit",
+            size,
+            cycleStart,
+          },
+        });
+      } catch (logErr) {
+        console.error(
+          JSON.stringify({
+            event: "usage_log_write_failed",
+            sub_event: "cache_hit",
+            error: logErr instanceof Error ? logErr.message : String(logErr),
+            shop,
+            request_id: reqId,
+          }),
+        );
+      }
+      return cacheHitResponse(cached.b64, reqId);
+    }
+  }
+
   const encoder = new TextEncoder();
   const generationAbortController = new AbortController();
   let streamCancelled = false;
@@ -351,8 +503,63 @@ export async function action({ request }: ActionFunctionArgs) {
       };
       const tResponseStart = performance.now();
       let timingPayload: unknown = null;
+      let finalB64: string | null = null;
       sendFrame(`: tryonai stream open ${SSE_OPEN_PADDING}\n\n`);
       send({ kind: "meta", requestId: reqId });
+
+      // FASHN shadow pilot (B3): on a sampled fraction of real requests, run the
+      // FASHN provider in parallel purely to log latency/cost for the A/B
+      // decision. The shopper NEVER sees it and it never affects billing/cap.
+      // Default OFF (FASHN_SHADOW_SAMPLE_RATE unset/0). Awaited in `finally` so
+      // the data is captured before the function exits (it usually finishes well
+      // within the OpenAI window, adding ~0ms).
+      let shadowPromise: Promise<void> | null = null;
+      const shadowRate = parseShadowSampleRate();
+      if (
+        shadowRate > 0 &&
+        process.env.FASHN_API_KEY &&
+        Math.random() < shadowRate
+      ) {
+        const tShadowStart = performance.now();
+        shadowPromise = generateTryOnFashnWithTiming({
+          selfie: selfieBuf,
+          selfieMimeType: selfieMime,
+          garment: garmentBuf,
+          garmentMimeType: garmentMime,
+          size,
+          signal: generationAbortController.signal,
+        })
+          .then((r) => {
+            console.log(
+              JSON.stringify({
+                event: "fashn_shadow",
+                ok: true,
+                shop,
+                request_id: reqId,
+                model: FASHN_TRYON_MODEL,
+                size,
+                latency_ms: Math.round(performance.now() - tShadowStart),
+                cost_usd: r.costUsd,
+                credits_used: r.creditsUsed ?? null,
+                poll_count: r.timings.pollCount,
+              }),
+            );
+          })
+          .catch((err) => {
+            if (isAbortError(err)) return;
+            console.warn(
+              JSON.stringify({
+                event: "fashn_shadow",
+                ok: false,
+                shop,
+                request_id: reqId,
+                model: FASHN_TRYON_MODEL,
+                latency_ms: Math.round(performance.now() - tShadowStart),
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            );
+          });
+      }
       try {
         for await (const event of generateTryOn({
           selfie: selfieBuf,
@@ -514,7 +721,24 @@ export async function action({ request }: ActionFunctionArgs) {
                 }),
               );
             }
+
+            // Persist to the result cache (A3) AFTER the client already has the
+            // image (the completed + timing frames were sent above), so it adds
+            // no perceived latency. Only cache a genuine successful final — never
+            // a low-quality fallback served because the medium pass failed.
+            // Best-effort: putCachedTryOn never throws.
+            if (cacheKey && finalB64 && !t.fallbackToPreview) {
+              await putCachedTryOn({
+                cacheKey,
+                b64: finalB64,
+                shop,
+                size,
+                promptVer: TRYON_CACHE_PROMPT_VERSION,
+                model: OPENAI_TRYON_MODEL,
+              });
+            }
           } else {
+            if (event.kind === "completed") finalB64 = event.b64;
             send(event);
           }
         }
@@ -571,6 +795,16 @@ export async function action({ request }: ActionFunctionArgs) {
         }
         send({ kind: "error", error: `Try-on generation failed: ${msg}` });
       } finally {
+        // Capture the FASHN shadow result before the function exits (the shopper
+        // already has their image; this only keeps the function alive long
+        // enough to log the A/B data, usually ~0ms since FASHN finished first).
+        if (shadowPromise) {
+          try {
+            await shadowPromise;
+          } catch {
+            // already logged inside the shadow handler
+          }
+        }
         request.signal.removeEventListener("abort", abortGeneration);
         if (!streamCancelled) controller.close();
       }
@@ -580,15 +814,7 @@ export async function action({ request }: ActionFunctionArgs) {
     },
   });
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Content-Encoding": "identity",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    },
-  });
+  return new Response(stream, { headers: SSE_HEADERS });
 }
 
 function normalizeMimeType(mimeType: string | null | undefined) {
