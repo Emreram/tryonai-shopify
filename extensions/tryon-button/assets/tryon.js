@@ -1,11 +1,35 @@
 (function () {
   const SUPPORTED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
   const MAX_GARMENT_BYTES = 8 * 1024 * 1024;
-  const STATUS_LINES = [
-    "Looking at your photo",
-    "Fitting the item",
-    "Adjusting the details",
+  // A scripted, theatrical "journey" that plays for the WHOLE wait (the real
+  // generation time can't be cut). Each step: `at` = ms from start, `to` =
+  // target progress %, `icon` = glyph key, `label` = the big status line. The
+  // last step `hold`s (bar caps at JOURNEY_HOLD_PCT, label persists) until the
+  // real result lands. Copy describes process activity only — it never claims
+  // the model detected/recognized/stored anything (consistent with consent).
+  const JOURNEY = [
+    { at: 0,     to: 8,  icon: "eye",    label: "Reading your photo" },
+    { at: 4200,  to: 20, icon: "pose",   label: "Mapping your pose & proportions" },
+    { at: 9000,  to: 33, icon: "fabric", label: "Studying the garment’s cut & weave" },
+    { at: 14000, to: 48, icon: "fit",    label: "Tailoring it to your frame" },
+    { at: 19500, to: 63, icon: "drape",  label: "Simulating drape, folds & shadow" },
+    { at: 25000, to: 76, icon: "light",  label: "Relighting to match your photo" },
+    { at: 30500, to: 88, icon: "detail", label: "Refining fine detail — pass three" },
+    { at: 36000, to: 92, icon: "finish", label: "Studio finish…", hold: true },
   ];
+  const JOURNEY_HOLD_PCT = 92;
+
+  // Stroke icons (24x24, currentColor) swapped into the glyph container per step.
+  const GLYPHS = {
+    eye:    '<path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/>',
+    pose:   '<circle cx="12" cy="4.5" r="2.1"/><path d="M12 7v6.5M12 9l-4.3 2M12 9l4.3 2M12 13.5l-3 5.5M12 13.5l3 5.5"/>',
+    fabric: '<path d="M4 5h16v14H4z"/><path d="M4 9c2.4 1.6 4.8 1.6 7.2 0S16 7.4 20 9M4 14c2.4 1.6 4.8 1.6 7.2 0S16 12.4 20 14"/>',
+    fit:    '<path d="M3 7l13.5-4 4 13.5-13.5 4z"/><path d="M8 6.4l1.1 3.3M11.6 5.3l1.1 3.3M15.2 9.4l1.1 3.3"/>',
+    drape:  '<path d="M3 8c2-2.4 4-2.4 6 0s4 2.4 6 0 4-2.4 6 0"/><path d="M3 14c2-2.4 4-2.4 6 0s4 2.4 6 0 4-2.4 6 0"/>',
+    light:  '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
+    detail: '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/><path d="M10.5 8v5M8 10.5h5"/>',
+    finish: '<path d="M12 4l1.7 5L19 11l-5.3 1.4L12 18l-1.7-5.6L5 11l5.3-1z"/><path d="M18.5 15l.5 1.6 1.6.5-1.6.5-.5 1.6-.5-1.6-1.6-.5 1.6-.5z"/>',
+  };
 
   function boot() {
     document.querySelectorAll(".tryonai-root").forEach(initRoot);
@@ -43,7 +67,14 @@
     const loomSelfie = $(".tryonai-loom__selfie");
     const loomGarment = $(".tryonai-loom__garment");
     const progressBar = $(".tryonai-progress__bar");
+    const loomEl = $(".tryonai-loom");
+    const glyphEl = $(".tryonai-glyph");
+    const glyphPathsEl = $(".tryonai-glyph__paths");
+    const refineBar = $(".tryonai-refine-bar");
     const statusEl = $(".tryonai-status");
+    const statusLayers = statusEl
+      ? statusEl.querySelectorAll(".tryonai-status__layer")
+      : [];
     const compare = $(".tryonai-compare");
     const compareBefore = $(".tryonai-compare__before");
     const compareAfter = $(".tryonai-compare__after");
@@ -115,7 +146,13 @@
       lastResult: null,
       lastResultBlob: null,
       progressRaf: null,
-      statusInterval: null,
+      progressTarget: 0,
+      progressDisplayed: 0,
+      journeyTimer: null,
+      journeyStep: -1,
+      journeyDone: false,
+      statusShiftTimer: null,
+      glyphSwapTimer: null,
       abortController: null,
       resultFinalReady: false,
       lastFocus: null,
@@ -385,7 +422,7 @@
       if (live && name !== "idle") {
         live.textContent =
           name === "compose" ? "Try-on opened. Add your photo." :
-          name === "generating" ? "Generating your try-on." :
+          name === "generating" ? "Creating your try-on. This takes up to a minute." :
           name === "reveal" ? "Your try-on is ready." : "";
       }
     }
@@ -655,13 +692,10 @@
       const controller = new AbortController();
       state.abortController = controller;
 
+      // The scripted journey owns the entire generating UI; real preview/partial
+      // frames are NOT revealed early — we unveil only on `completed`. We still
+      // stash the latest bytes so the post-loop guard + timing log keep working.
       let lastB64 = null;
-      let revealed = false;
-      const ensureReveal = (b64) => {
-        if (revealed) return;
-        revealed = true;
-        enterRevealFromB64(b64, state.selfieFile);
-      };
 
       state.requestId = null;
       try {
@@ -745,26 +779,24 @@
               }
               if (evt.kind === "partial") {
                 if (t.firstPartial === null) t.firstPartial = performance.now();
-                lastB64 = evt.b64;
-                ensureReveal(evt.b64);
-                compareAfter.src = "data:image/jpeg;base64," + evt.b64;
-                setProgress(Math.max(currentProgress(), Math.min(75, (evt.index + 1) * 25)));
+                lastB64 = evt.b64; // stash only — journey owns the visible UI
               } else if (evt.kind === "preview") {
                 if (t.preview === null) t.preview = performance.now();
-                lastB64 = evt.b64;
-                ensureReveal(evt.b64);
-                compareAfter.src = "data:image/jpeg;base64," + evt.b64;
-                setProgress(Math.max(currentProgress(), 50));
+                lastB64 = evt.b64; // stash only — no early reveal
               } else if (evt.kind === "completed") {
                 t.completed = performance.now();
                 lastB64 = evt.b64;
-                ensureReveal(evt.b64);
+                // The single unveil: end the journey, then wipe in the FINAL.
+                fastForwardJourney();
+                enterRevealFromB64(evt.b64, state.selfieFile);
                 await finishReveal(evt.b64);
                 t.rendered = performance.now();
               } else if (evt.kind === "timing") {
                 serverTiming = evt;
               } else if (evt.kind === "error") {
-                throw new Error(evt.error || "Generation failed");
+                const e = new Error(evt.error || "Generation failed");
+                if (evt.code) e.code = evt.code;
+                throw e;
               }
             }
           }
@@ -798,47 +830,197 @@
         // eslint-disable-next-line no-console
         console.log("[tryonai]", JSON.stringify(log));
       } catch (err) {
-        if (err && err.name === "AbortError") return;
+        if (err && err.name === "AbortError") { stopProgress(); return; }
         stopProgress();
         state.generating = false;
         setStage("compose");
-        showError((err && err.message) || "Generation failed");
+        showError((err && err.message) || "Generation failed", err && err.code);
       } finally {
         state.abortController = null;
       }
     }
 
     function setProgress(pct) {
+      // Terminal/direct write. During the journey the rAF loop (below) owns the
+      // width; this is used by finishReveal(100) after the rAF is cancelled.
+      state.progressTarget = pct;
+      state.progressDisplayed = pct;
       progressBar.style.width = pct + "%";
+      if (refineBar) refineBar.style.width = pct + "%";
     }
 
-    function currentProgress() {
-      const pct = parseFloat(progressBar.style.width);
-      return Number.isFinite(pct) ? pct : 0;
+    // --- Scripted journey driver --------------------------------------------
+
+    // Swap the per-step icon into the single glyph container, with a pop + draw.
+    function setGlyph(key) {
+      const markup = GLYPHS[key];
+      if (!glyphEl || !glyphPathsEl || !markup) return;
+      if (!glyphPathsEl.firstChild) {
+        glyphPathsEl.innerHTML = markup; // first paint: no animation
+        return;
+      }
+      glyphEl.classList.remove("is-swapping");
+      void glyphEl.offsetWidth; // reflow so consecutive swaps re-trigger
+      glyphEl.classList.add("is-swapping");
+      clearTimeout(state.glyphSwapTimer);
+      state.glyphSwapTimer = window.setTimeout(() => {
+        glyphPathsEl.innerHTML = markup;
+      }, 250); // swap at the dissolve trough (~45% of 560ms)
+    }
+
+    // Overlapping cross-fade of the big status line via two stacked layers:
+    // the incoming layer rises + sharpens (blur->0) while the outgoing drifts up
+    // + softens, both transitioning together — no blank frame between steps.
+    function setStatusLabel(text) {
+      if (!statusEl || !text || statusLayers.length < 2) return;
+      const current =
+        statusEl.querySelector(".tryonai-status__layer.is-current") ||
+        statusLayers[0];
+      if (current.textContent === text) return;
+      const incoming =
+        current === statusLayers[0] ? statusLayers[1] : statusLayers[0];
+      incoming.textContent = text;
+      incoming.classList.remove("is-current", "is-leaving");
+      void incoming.offsetWidth; // commit the below/blurred/transparent start state
+      incoming.classList.add("is-current");
+      current.classList.remove("is-current");
+      current.classList.add("is-leaving");
+      announce(text); // one SR announcement per real step change
+    }
+
+    // A single rAF loop eases the bar toward state.progressTarget, so it always
+    // drifts forward and decelerates near each target — never static, and it
+    // asymptotes at the hold cap (never reaching 100 on its own).
+    function startProgressLoop() {
+      const reduce =
+        !!window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      let last = performance.now();
+      const tick = (now) => {
+        const dt = Math.min(64, now - last) / 1000; // clamp for tab throttling
+        last = now;
+        const target = state.progressTarget;
+        if (reduce) {
+          state.progressDisplayed = target;
+        } else {
+          const d = state.progressDisplayed;
+          const next = d + (target - d) * Math.min(1, 2.0 * dt); // silkier glide
+          state.progressDisplayed =
+            Math.abs(target - next) < 0.12 ? target : next;
+        }
+        const w = state.progressDisplayed.toFixed(2) + "%";
+        progressBar.style.width = w;
+        if (refineBar) refineBar.style.width = w;
+        state.progressRaf = requestAnimationFrame(tick);
+      };
+      state.progressRaf = requestAnimationFrame(tick);
+    }
+
+    function setProgressTarget(pct) {
+      // Monotonic + capped below 100 (only finishReveal writes 100).
+      state.progressTarget = Math.max(
+        state.progressTarget || 0,
+        Math.min(JOURNEY_HOLD_PCT, pct),
+      );
+    }
+
+    function applyJourneyStep(i) {
+      if (i <= state.journeyStep) return; // forward-only
+      state.journeyStep = i;
+      const step = JOURNEY[i];
+      setProgressTarget(step.to);
+      if (i === 0) {
+        // First paint: place the label + glyph instantly (no shift/pop). Reset
+        // the two status layers so a re-run starts clean.
+        if (statusLayers.length) {
+          statusLayers[0].textContent = step.label;
+          statusLayers[0].classList.add("is-current");
+          if (statusLayers[1]) {
+            statusLayers[1].classList.remove("is-current", "is-leaving");
+            statusLayers[1].textContent = "";
+          }
+        }
+        setGlyph(step.icon);
+        announce(step.label);
+      } else {
+        setStatusLabel(step.label);
+        setGlyph(step.icon);
+      }
+      if (loomEl) {
+        loomEl.classList.remove("is-pulsing");
+        void loomEl.offsetWidth;
+        loomEl.classList.add("is-pulsing");
+      }
+    }
+
+    function advanceJourney() {
+      state.journeyTimer = null;
+      if (state.journeyDone) return;
+      const next = state.journeyStep + 1;
+      if (next >= JOURNEY.length) return;
+      applyJourneyStep(next);
+      const step = JOURNEY[next];
+      if (step.hold) return; // terminal: hold here until the real `completed`
+      const followon = JOURNEY[next + 1];
+      if (followon) {
+        state.journeyTimer = window.setTimeout(
+          advanceJourney,
+          followon.at - step.at,
+        );
+      }
+    }
+
+    function startJourney() {
+      if (state.journeyTimer) clearTimeout(state.journeyTimer);
+      state.journeyTimer = null;
+      state.journeyDone = false;
+      state.journeyStep = -1;
+      applyJourneyStep(0);
+      const second = JOURNEY[1];
+      if (second) {
+        state.journeyTimer = window.setTimeout(
+          advanceJourney,
+          second.at - JOURNEY[0].at,
+        );
+      }
+    }
+
+    // Completion arrived: run the rest of the script instantly so the reveal
+    // never looks cut off mid-step. Fills to the hold cap — finishReveal owns 100.
+    function fastForwardJourney() {
+      if (state.journeyTimer) clearTimeout(state.journeyTimer);
+      state.journeyTimer = null;
+      state.journeyDone = true;
+      state.journeyStep = JOURNEY.length - 1;
+      setProgressTarget(JOURNEY_HOLD_PCT);
     }
 
     function startGeneratingAnimation(selfie, garment) {
       loomSelfie.src = URL.createObjectURL(selfie);
       loomGarment.src = URL.createObjectURL(garment);
-      setProgress(0);
 
-      let idx = 0;
-      statusEl.textContent = STATUS_LINES[0];
-      state.statusInterval = window.setInterval(() => {
-        idx = (idx + 1) % STATUS_LINES.length;
-        statusEl.style.opacity = "0";
-        setTimeout(() => {
-          statusEl.textContent = STATUS_LINES[idx];
-          statusEl.style.opacity = "1";
-        }, 180);
-      }, 1200);
+      // Reset progress + journey for a clean (re-)run.
+      state.progressTarget = 0;
+      state.progressDisplayed = 0;
+      progressBar.style.width = "0%";
+      if (refineBar) {
+        refineBar.classList.remove("is-complete");
+        refineBar.style.width = "0%";
+      }
+      compare.classList.remove("is-developing");
+      delete compare.dataset.refine;
+
+      startProgressLoop();
+      startJourney();
     }
 
     function stopProgress() {
       if (state.progressRaf) cancelAnimationFrame(state.progressRaf);
-      if (state.statusInterval) clearInterval(state.statusInterval);
+      if (state.journeyTimer) clearTimeout(state.journeyTimer);
+      if (state.statusShiftTimer) clearTimeout(state.statusShiftTimer);
+      if (state.glyphSwapTimer) clearTimeout(state.glyphSwapTimer);
       state.progressRaf = null;
-      state.statusInterval = null;
+      state.journeyTimer = null;
     }
 
     function enterRevealFromB64(b64, selfie) {
@@ -868,6 +1050,7 @@
     }
 
     async function finishReveal(b64) {
+      state.journeyDone = true; // defensive: short-circuit any late journey tick
       const dataUrl = "data:image/jpeg;base64," + b64;
       state.lastResult = dataUrl;
       try {
@@ -889,6 +1072,14 @@
 
       stopProgress();
       state.generating = false;
+
+      // The final crisp image is in place — drop the develop blur + refine bar
+      // so nothing stays softened, and announce real completion for SR users
+      // (the reveal-stage announcement was softened to "appearing, refining").
+      compare.classList.remove("is-developing");
+      delete compare.dataset.refine;
+      if (refineBar) refineBar.classList.add("is-complete");
+      announce("Your try-on is ready.");
 
       requestAnimationFrame(() => { fitCompare(); });
     }
@@ -1124,8 +1315,21 @@
     function announce(text) {
       if (live) live.textContent = text;
     }
-    function showError(text) {
-      const message = text || "Something went wrong.";
+    function showError(text, code) {
+      let message = text || "Something went wrong.";
+      // Map OpenAI's safety/moderation rejection to friendly, actionable
+      // guidance. The server sends code "safety_rejected" with this copy; the
+      // regex is a fallback for when the server isn't yet redeployed (it still
+      // sends the raw OpenAI "rejected by the safety system" text).
+      if (
+        code === "safety_rejected" ||
+        /safety system|rejected by the safety/i.test(message)
+      ) {
+        message =
+          "We couldn't create a try-on from that photo. For best results, " +
+          "upload a clear, well-lit photo of just you, facing the camera — " +
+          "with no one else in the frame.";
+      }
       if (errorEl) {
         errorEl.textContent = message;
         errorEl.hidden = false;

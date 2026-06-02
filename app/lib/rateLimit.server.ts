@@ -34,6 +34,24 @@ export function hashIp(ip: string): string {
   return crypto.createHmac("sha256", secret).update(ip).digest("hex");
 }
 
+/**
+ * A privacy-preserving, stable end-user identifier for OpenAI's `user` param
+ * (safety monitoring / abuse attribution). Never sends a raw Shopify customer
+ * id to OpenAI — it's an HMAC keyed on the app secret, scoped per shop+customer
+ * (or "anon" when the shopper isn't logged in). Returns "" when no secret is
+ * configured so callers can omit the param.
+ */
+export function hashUserId(shop: string, customerId: string | null): string {
+  const secret = process.env.SHOPIFY_API_SECRET;
+  if (!secret) return "";
+  const subject = customerId && customerId.length > 0 ? `c:${customerId}` : "anon";
+  return crypto
+    .createHmac("sha256", secret)
+    .update(`${shop}|${subject}`)
+    .digest("hex")
+    .slice(0, 64);
+}
+
 export function buildKey(
   shop: string,
   customerId: string | null,

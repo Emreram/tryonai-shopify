@@ -1,6 +1,53 @@
-import OpenAI, { toFile } from "openai";
+import OpenAI, { toFile, APIError } from "openai";
 
 export const OPENAI_TRYON_MODEL = "gpt-image-2-2026-04-21";
+
+/**
+ * Thrown when OpenAI's image-edit safety system rejects the request (almost
+ * always the uploaded reference photo — the edit endpoint is intentionally
+ * strict and refuses to edit photos it can't verify the caller owns, e.g.
+ * multi-person/model-like shots). There is NO `moderation` param on
+ * `images.edit` to relax this, so the only graceful response is a clear,
+ * actionable message to the shopper. Carries the OpenAI request id for support.
+ */
+export class TryOnSafetyRejectionError extends Error {
+  readonly code = "safety_rejected" as const;
+  readonly openaiRequestId: string | null;
+  readonly openaiCode: string | null;
+  constructor(
+    openaiRequestId: string | null,
+    openaiCode: string | null,
+    options?: { cause?: unknown },
+  ) {
+    super("OpenAI safety system rejected the try-on input image");
+    this.name = "TryOnSafetyRejectionError";
+    this.openaiRequestId = openaiRequestId;
+    this.openaiCode = openaiCode;
+    if (options?.cause !== undefined) {
+      (this as { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
+const SAFETY_REJECTION_CODES = new Set([
+  "moderation_blocked",
+  "image_generation_user_error",
+  "content_policy_violation",
+]);
+
+function isSafetyRejection(err: unknown): err is APIError {
+  if (!(err instanceof APIError)) return false;
+  if (err.status !== 400) return false;
+  const code = String(err.code ?? "").toLowerCase();
+  const type = String((err as { type?: unknown }).type ?? "").toLowerCase();
+  const msg = String(err.message ?? "").toLowerCase();
+  return (
+    SAFETY_REJECTION_CODES.has(code) ||
+    SAFETY_REJECTION_CODES.has(type) ||
+    msg.includes("safety system") ||
+    msg.includes("rejected by the safety")
+  );
+}
 
 let client: OpenAI | null = null;
 
@@ -24,6 +71,8 @@ export interface TryOnInput {
   quality?: "low" | "medium" | "high";
   size?: "1024x1024" | "1024x1536" | "1536x1024";
   signal?: AbortSignal;
+  /** Opaque, privacy-preserving end-user identifier for OpenAI safety monitoring. */
+  user?: string;
 }
 
 type TryOnQuality = "low" | "medium" | "high";
@@ -130,6 +179,7 @@ export async function* generateTryOn({
   quality = "medium",
   size = "1024x1536",
   signal,
+  user,
 }: TryOnInput): AsyncGenerator<TryOnStreamEvent, void, void> {
   const openai = getClient();
   const [selfieFile, garmentFile] = await Promise.all([
@@ -151,6 +201,7 @@ export async function* generateTryOn({
   let mediumDone = false;
   let mediumSucceeded = false;
   let mediumError: string | null = null;
+  let safetyRejection: TryOnSafetyRejectionError | null = null;
   let finalQueued = false;
   let timingQueued = false;
   let previewEmitted = false;
@@ -218,7 +269,9 @@ export async function* generateTryOn({
       return;
     }
     if (lowDone) {
-      queueTerminal(new Error(mediumError ?? "OpenAI medium try-on failed"));
+      queueTerminal(
+        safetyRejection ?? new Error(mediumError ?? "OpenAI medium try-on failed"),
+      );
     }
   };
 
@@ -233,10 +286,12 @@ export async function* generateTryOn({
         partialImages: 0,
         signal: lowAbort.signal,
         timing: lowTiming,
+        user,
       });
       lowSucceeded = true;
       emitPreview(lowB64);
     } catch (err) {
+      if (err instanceof TryOnSafetyRejectionError) safetyRejection = err;
       if (!isAbortError(err) || (!finalQueued && !signal?.aborted)) {
         lowTiming.error = getErrorMessage(err);
       }
@@ -258,6 +313,7 @@ export async function* generateTryOn({
         partialImages: 3,
         signal: mediumAbort.signal,
         timing: mediumTiming,
+        user,
         onPartial(event) {
           if (finalQueued) return;
           queue.push({
@@ -270,6 +326,7 @@ export async function* generateTryOn({
       mediumSucceeded = true;
       emitFinal(b64);
     } catch (err) {
+      if (err instanceof TryOnSafetyRejectionError) safetyRejection = err;
       mediumError = getErrorMessage(err);
       mediumTiming.error = mediumError;
     } finally {
@@ -373,6 +430,7 @@ async function runImageEditPass({
   partialImages,
   signal,
   timing,
+  user,
   onPartial,
 }: {
   openai: OpenAI;
@@ -383,26 +441,48 @@ async function runImageEditPass({
   partialImages: number;
   signal: AbortSignal;
   timing: TryOnPassTiming;
+  user?: string;
   onPartial?: (event: ImageEditPartialEvent) => void;
 }) {
   timing.tOpenaiStart = performance.now();
-  const { data: stream, response } = await openai.images
-    .edit(
-      {
-        model: OPENAI_TRYON_MODEL,
-        image,
-        prompt,
-        size,
-        quality,
-        n: 1,
-        output_format: "jpeg",
-        output_compression: 85,
-        stream: true,
-        partial_images: partialImages,
-      },
-      { signal },
-    )
-    .withResponse();
+  const { data: stream, response } = await (async () => {
+    try {
+      return await openai.images
+        .edit(
+          {
+            model: OPENAI_TRYON_MODEL,
+            image,
+            prompt,
+            size,
+            quality,
+            n: 1,
+            output_format: "jpeg",
+            output_compression: 85,
+            stream: true,
+            partial_images: partialImages,
+            ...(user ? { user } : {}),
+          },
+          { signal },
+        )
+        .withResponse();
+    } catch (err) {
+      // A safety/moderation block throws here (before the stream resolves). Read
+      // the request id off the error and surface a typed error so the route can
+      // show actionable guidance instead of the raw OpenAI text.
+      if (isSafetyRejection(err)) {
+        const reqId =
+          (err as { requestID?: string | null }).requestID ??
+          err.headers?.get?.("x-request-id") ??
+          null;
+        timing.requestId = reqId;
+        timing.error = "safety_rejected";
+        throw new TryOnSafetyRejectionError(reqId, err.code ?? null, {
+          cause: err,
+        });
+      }
+      throw err;
+    }
+  })();
 
   timing.requestId = response.headers.get("x-request-id");
   timing.processingMs = parseProcessingMs(response.headers.get("openai-processing-ms"));

@@ -3,12 +3,14 @@ import {
   computeCostUsd,
   generateTryOn,
   OPENAI_TRYON_MODEL,
+  TryOnSafetyRejectionError,
 } from "../lib/openai.server";
 import { verifyProxySignature } from "../lib/proxy.server";
 import {
   buildKey as buildRateLimitKey,
   checkAndIncrement as rateLimitCheck,
   decrement as rateLimitDecrement,
+  hashUserId,
 } from "../lib/rateLimit.server";
 import db from "../db.server";
 import {
@@ -503,6 +505,7 @@ export async function action({ request }: ActionFunctionArgs) {
           garmentMimeType: garmentMime,
           size,
           signal: generationAbortController.signal,
+          user: hashUserId(shop, customerId) || undefined,
         })) {
           if (streamCancelled) break;
           if (event.kind === "timing") {
@@ -688,10 +691,16 @@ export async function action({ request }: ActionFunctionArgs) {
           await rateLimitDecrement(rateLimitKey);
         }
         const msg = err instanceof Error ? err.message : "Unknown error";
+        const safety = err instanceof TryOnSafetyRejectionError ? err : null;
         console.error(
           JSON.stringify({
             event: "tryon_error",
             error: msg,
+            // Keep the OpenAI request id in logs for support tickets even though
+            // the shopper sees a friendly message.
+            error_code: safety ? "safety_rejected" : null,
+            openai_request_id: safety ? safety.openaiRequestId : null,
+            openai_code: safety ? safety.openaiCode : null,
             shop,
             request_id: reqId,
             timing: timingPayload,
@@ -728,7 +737,18 @@ export async function action({ request }: ActionFunctionArgs) {
             }),
           );
         }
-        send({ kind: "error", error: `Try-on generation failed: ${msg}` });
+        if (safety) {
+          send({
+            kind: "error",
+            code: "safety_rejected",
+            error:
+              "We couldn't create a try-on from that photo. For best results, " +
+              "upload a clear, well-lit photo of just you, facing the camera — " +
+              "with no one else in the frame.",
+          });
+        } else {
+          send({ kind: "error", error: `Try-on generation failed: ${msg}` });
+        }
       } finally {
         request.signal.removeEventListener("abort", abortGeneration);
         if (!streamCancelled) controller.close();
