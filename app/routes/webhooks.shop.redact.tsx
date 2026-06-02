@@ -28,6 +28,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     db.merchantSettings.deleteMany({ where: { shop } }),
     db.billingState.deleteMany({ where: { shop } }),
     db.session.deleteMany({ where: { shop } }),
+    db.shopCatalog.deleteMany({ where: { shop } }),
     db.shop.deleteMany({ where: { domain: shop } }),
   ]);
 

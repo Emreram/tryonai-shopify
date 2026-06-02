@@ -279,10 +279,10 @@ export async function action({ request }: ActionFunctionArgs) {
   const [trialCount, used, todaySpend] = await Promise.all([
     plan === "trial"
       ? db.usageLog.count({
-          where: { shop, createdAt: { gte: billing.trialStartedAt }, status: "ok" },
+          where: { shop, kind: "tryon", createdAt: { gte: billing.trialStartedAt }, status: "ok" },
         })
       : Promise.resolve(0),
-    db.usageLog.count({ where: { shop, cycleStart, status: "ok" } }),
+    db.usageLog.count({ where: { shop, kind: "tryon", cycleStart, status: "ok" } }),
     ceilingEnabled
       ? db.usageLog.aggregate({
           _sum: { costUsd: true },
@@ -497,6 +497,19 @@ export async function action({ request }: ActionFunctionArgs) {
       let finalB64: string | null = null;
       sendFrame(`: tryonai stream open ${SSE_OPEN_PADDING}\n\n`);
       send({ kind: "meta", requestId: reqId });
+      // Heartbeat: keep the SSE connection warm through silent stretches (notably
+      // the initial gap before OpenAI emits its first event) so an App-Proxy / CDN
+      // / platform idle-read timeout can't drop the stream before the terminal
+      // `completed` frame arrives. `:`-prefixed comment frames are ignored by the
+      // client's SSE parser, so they affect nothing but liveness.
+      const heartbeat = setInterval(() => {
+        if (streamCancelled) return;
+        try {
+          controller.enqueue(encoder.encode(`: ping\n\n`));
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 10_000);
       try {
         for await (const event of generateTryOn({
           selfie: selfieBuf,
@@ -750,6 +763,7 @@ export async function action({ request }: ActionFunctionArgs) {
           send({ kind: "error", error: `Try-on generation failed: ${msg}` });
         }
       } finally {
+        clearInterval(heartbeat);
         request.signal.removeEventListener("abort", abortGeneration);
         if (!streamCancelled) controller.close();
       }

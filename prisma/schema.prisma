@@ -50,6 +50,12 @@ model MerchantSettings {
   accentColor         String   @default("#000000")
   allowedProductTypes String   @default("[]")
   cacheEnabled        Boolean  @default(true)
+  // Per-shop kill switch for the AI Outfit Stylist (ships dark; enabled per shop
+  // only after App Store approval, on top of the OUTFIT_FEATURE_ENABLED env flag).
+  outfitEnabled       Boolean  @default(false)
+  // Per-shop kill switch for the AI Size Recommender (ships dark; on top of the
+  // SIZE_FEATURE_ENABLED env flag).
+  sizeEnabled         Boolean  @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -77,6 +83,11 @@ model UsageLog {
   requestId       String   @unique
   openaiRequestId String?
   plan            String
+  // What produced this row. "tryon" = an image generation (counts toward the
+  // merchant's monthly cap). "outfit" = a gpt-5.4-mini outfit-selection call
+  // (cheap text model; logged for COGS + as the cart-attribution anchor, but
+  // EXCLUDED from the merchant cap — every cap/trial count filters kind:"tryon").
+  kind            String   @default("tryon")
   costUsd         Float
   inputTokens     Int?
   outputTokens   Int?
@@ -92,22 +103,25 @@ model UsageLog {
   @@index([shop, cycleStart])
   @@index([createdAt])
   @@index([shop, status, cycleStart])
+  @@index([shop, kind, status, cycleStart])
 }
 
-// Tool-driven add-to-cart attribution. One row per try-on result that a shopper
-// added to their cart from the try-on widget (extensions/tryon-button), reported
+// Tool-driven add-to-cart attribution. One row per (try-on OR outfit) result a
+// shopper added to their cart from the widget (extensions/tryon-button), reported
 // by a signed app-proxy beacon AFTER the storefront /cart/add.js succeeds. Keyed
-// by the originating try-on `requestId` so it is idempotent (a result added
-// twice counts once) and so it can only be written for a real generation that
-// already exists in UsageLog — this prevents arbitrary inflation. Holds NO
-// customer-identifiable data: just the shop, the product/variant added, and the
-// price captured at add time (the merchant's own catalog data). Powers the
-// add-to-cart count + attributed cart value + estimated commission on /metrics.
+// by the originating `requestId` (a try-on generation OR an outfit-selection
+// anchor) so it can only be written for a real, server-issued UsageLog row — this
+// prevents arbitrary inflation. The unique key includes `variantId` so a single
+// outfit (one `requestId` shared across its pieces) records ONE row per piece,
+// while still being idempotent per piece. Holds NO customer-identifiable data:
+// just the shop, the product/variant added, and the price captured at add time
+// (the merchant's own catalog data). Powers the add-to-cart count + attributed
+// cart value + estimated commission on /metrics.
 model CartEvent {
   id            String   @id @default(cuid())
   shop          String
-  requestId     String // the try-on request whose result was added (joins UsageLog.requestId)
-  plan          String // plan at the time of the try-on (copied from the matched UsageLog row)
+  requestId     String // the try-on or outfit request whose result was added (joins UsageLog.requestId)
+  plan          String // plan at the time of the request (copied from the matched UsageLog row)
   productHandle String?
   variantId     String?
   quantity      Int      @default(1)
@@ -117,7 +131,11 @@ model CartEvent {
   cycleStart    DateTime // copied from the matched UsageLog row (the try-on's billing cycle)
   createdAt     DateTime @default(now())
 
-  @@unique([shop, requestId])
+  // (shop, requestId, variantId): one row per distinct piece of an outfit, still
+  // idempotent per piece. NOTE: Postgres treats NULLs as distinct, so a null
+  // variantId is de-duplicated in code (see recordCartEvent) rather than by this
+  // constraint.
+  @@unique([shop, requestId, variantId])
   @@index([shop, createdAt])
   @@index([createdAt])
 }
@@ -152,5 +170,26 @@ model TryOnCache {
   expiresAt   DateTime
 
   @@index([shop])
+  @@index([expiresAt])
+}
+
+// Per-shop normalized product index for the AI Outfit Stylist. Built from the
+// shop's PUBLIC storefront data (no Admin API scope): /products.json (paginated)
+// and /recommendations/products.json. `data` is the compact, normalized catalog
+// the selection engine reasons over (handle, title, outfit slot, color family,
+// price, image, in-stock variant ids) — NOT raw Shopify payloads, and NO customer
+// data. One row per shop, TTL'd via expiresAt and rebuilt lazily so only the first
+// outfit per shop per window pays the fetch cost. Purged on uninstall/shop redact.
+model ShopCatalog {
+  shop         String   @id
+  // "full" = built from /products.json; "recommendations-only" = public feed was
+  // disabled, anchored mode runs off /recommendations only; "unavailable" = no
+  // usable public data (stylist hides itself for this shop).
+  feedMode     String   @default("full")
+  productCount Int      @default(0)
+  data         Json
+  builtAt      DateTime @default(now())
+  expiresAt    DateTime
+
   @@index([expiresAt])
 }

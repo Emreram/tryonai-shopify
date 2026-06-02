@@ -1,0 +1,33 @@
+/* Outfit Stylist — built on tryonai-kit.css (Atelier/noir/gallery). Only
+   outfit-specific layout lives here; all tokens/components come from the kit. */
+.tryonai-outfit-root { display: block; margin: 10px 0; }
+
+/* mode picker */
+.tryonai-of-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 520px) { .tryonai-of-modes { grid-template-columns: 1fr; } }
+.tryonai-of-mode {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 16px; text-align: center;
+  background: var(--tk-bg-paper); border: 1px solid var(--tk-line-strong); border-radius: 12px; cursor: pointer;
+  transition: border-color 150ms var(--tk-ease), transform 120ms var(--tk-ease), box-shadow 150ms var(--tk-ease);
+}
+.tryonai-of-mode:hover { border-color: var(--tk-accent); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
+.tryonai-of-mode img { width: 76px; height: 92px; object-fit: cover; border-radius: 8px; }
+.tryonai-of-mode__icon { font-size: 34px; line-height: 76px; color: var(--tk-accent); }
+.tryonai-of-mode__t { font-style: italic; font-size: 16px; font-variation-settings: "opsz" 144; }
+.tryonai-of-mode__d { font-size: 13px; color: var(--tk-muted); max-width: 22ch; }
+
+/* quiz progress dots */
+.tryonai-of-dots { display: flex; gap: 6px; justify-content: center; margin-bottom: 14px; }
+.tryonai-of-dot { width: 22px; height: 4px; border-radius: 2px; background: var(--tk-line-strong); }
+.tryonai-of-dot.is-on { background: var(--tk-accent); }
+.tryonai-of-foot-row { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; }
+
+/* cta row (outfit reveal) */
+.tryonai-of-cta-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.tryonai-of-total { font-style: italic; font-size: 16px; font-variation-settings: "opsz" 144; }
+.tryonai-of-cta-row .tryonai-k-cta { width: auto; margin-left: auto; }
+
+/* try-on stage */
+.tryonai-of-stage { position: relative; min-height: 280px; display: flex; align-items: center; justify-content: center; background: var(--tk-bg-soft); border-radius: 10px; overflow: hidden; }
+.tryonai-of-drop { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 26px; text-align: center; }
+.tryonai-of-selfie { max-height: 200px; border-radius: 8px; }

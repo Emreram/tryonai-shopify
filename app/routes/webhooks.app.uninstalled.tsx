@@ -3,6 +3,7 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { purgeShopTryOnCache } from "../lib/tryonCache.server";
+import { purgeShopIndex } from "../lib/outfitIndex.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, session, topic } = await authenticate.webhook(request);
@@ -43,6 +44,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }),
     );
   }
+
+  // Drop the cached product index (catalog data) for this shop.
+  await purgeShopIndex(shop);
 
   return new Response();
 };

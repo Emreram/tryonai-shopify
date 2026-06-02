@@ -943,6 +943,43 @@
   will-change: width;
 }
 
+/* Finishing: once the wait outruns the scripted journey the bar enters a slow
+   creep (JS) where numeric movement is tiny. A calm breathing glow + a sheen
+   sweep keep the hairline reading as ACTIVE rather than stuck, without thickening
+   it or claiming progress. Disabled under reduced motion (global rule below). */
+.tryonai-progress.is-finishing .tryonai-progress__bar {
+  position: relative;
+  overflow: hidden;
+  animation: tryonai-finishing-breathe 2.2s var(--tryonai-ease) infinite;
+}
+.tryonai-progress.is-finishing .tryonai-progress__bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--tryonai-accent) 80%, white) 50%,
+    transparent 100%
+  );
+  animation: tryonai-finishing-sweep 1.9s var(--tryonai-ease-out) infinite;
+}
+@keyframes tryonai-finishing-breathe {
+  0%, 100% {
+    box-shadow: 0 0 6px -1px color-mix(in srgb, var(--tryonai-accent) 35%, transparent);
+    opacity: 0.82;
+  }
+  50% {
+    box-shadow: 0 0 11px 0 color-mix(in srgb, var(--tryonai-accent) 70%, transparent);
+    opacity: 1;
+  }
+}
+@keyframes tryonai-finishing-sweep {
+  from { transform: translateX(-130%); }
+  to   { transform: translateX(330%); }
+}
+
 /* Two stacked layers share one grid cell so the status line can CROSS-FADE
    (incoming rises + sharpens while outgoing drifts up + softens) with no blank
    frame between steps. */
@@ -1332,6 +1369,15 @@
   .tryonai-loom__garment,
   .tryonai-loom__sweep { animation: none !important; }
   .tryonai-loom.is-pulsing::after { animation: none !important; opacity: 0; }
+  /* Finishing creep: no breathing/sheen — hold a clean, full-opacity hairline. */
+  .tryonai-progress.is-finishing .tryonai-progress__bar {
+    animation: none !important;
+    opacity: 1;
+  }
+  .tryonai-progress.is-finishing .tryonai-progress__bar::after {
+    animation: none !important;
+    display: none;
+  }
   /* Status: show only the current layer instantly (no cross-fade / double text). */
   .tryonai-status__layer {
     transition: none !important;

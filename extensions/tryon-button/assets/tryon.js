@@ -4,20 +4,37 @@
   // A scripted, theatrical "journey" that plays for the WHOLE wait (the real
   // generation time can't be cut). Each step: `at` = ms from start, `to` =
   // target progress %, `icon` = glyph key, `label` = the big status line. The
-  // last step `hold`s (bar caps at JOURNEY_HOLD_PCT, label persists) until the
-  // real result lands. Copy describes process activity only — it never claims
-  // the model detected/recognized/stored anything (consistent with consent).
+  // last step `hold`s, then HANDS OFF to the creep (startCreep) so the bar keeps
+  // inching toward CREEP_CAP and the label keeps rotating until the real result
+  // lands — never a frozen bar. Copy describes process activity only — it never
+  // claims the model detected/recognized/stored anything (consistent w/ consent).
   const JOURNEY = [
-    { at: 0,     to: 8,  icon: "eye",    label: "Reading your photo" },
-    { at: 4200,  to: 20, icon: "pose",   label: "Mapping your pose & proportions" },
-    { at: 9000,  to: 33, icon: "fabric", label: "Studying the garment’s cut & weave" },
-    { at: 14000, to: 48, icon: "fit",    label: "Tailoring it to your frame" },
-    { at: 19500, to: 63, icon: "drape",  label: "Simulating drape, folds & shadow" },
-    { at: 25000, to: 76, icon: "light",  label: "Relighting to match your photo" },
-    { at: 30500, to: 88, icon: "detail", label: "Refining fine detail — pass three" },
-    { at: 36000, to: 92, icon: "finish", label: "Studio finish…", hold: true },
+    { at: 0,     to: 7,  icon: "eye",    label: "Reading your photo" },
+    { at: 3200,  to: 16, icon: "pose",   label: "Mapping your pose & proportions" },
+    { at: 7000,  to: 26, icon: "fabric", label: "Studying the garment’s cut & weave" },
+    { at: 11000, to: 36, icon: "fit",    label: "Tailoring it to your frame" },
+    { at: 15000, to: 46, icon: "drape",  label: "Simulating drape & folds" },
+    { at: 19000, to: 56, icon: "drape",  label: "Settling natural shadow" },
+    { at: 22500, to: 65, icon: "light",  label: "Relighting to match your photo" },
+    { at: 26000, to: 73, icon: "light",  label: "Balancing color & tone" },
+    { at: 29500, to: 80, icon: "detail", label: "Refining fine detail" },
+    { at: 33000, to: 86, icon: "detail", label: "Sharpening edges & seams" },
+    { at: 36000, to: 90, icon: "finish", label: "Studio finish…", hold: true },
   ];
-  const JOURNEY_HOLD_PCT = 92;
+  // The scripted journey caps its bar at 90; once it reaches the terminal step
+  // it hands off to a slow asymptotic "creep" toward CREEP_CAP so the bar is
+  // never frozen during a long wait. Real-result handling (finishReveal) still
+  // owns 100 exclusively — the creep never reaches it.
+  const JOURNEY_HOLD_PCT = 90;
+  const CREEP_CAP = 98;
+  // Calm, process-only copy cycled during the creep so the last step never sits
+  // on one unchanging line. Each carries the glyph it should show.
+  const CREEP_LABELS = [
+    { icon: "finish", label: "Studio finish…" },
+    { icon: "light",  label: "Polishing highlights" },
+    { icon: "detail", label: "Final color pass" },
+    { icon: "finish", label: "Last refinements…" },
+  ];
 
   // Stroke icons (24x24, currentColor) swapped into the glyph container per step.
   const GLYPHS = {
@@ -67,6 +84,7 @@
     const loomSelfie = $(".tryonai-loom__selfie");
     const loomGarment = $(".tryonai-loom__garment");
     const progressBar = $(".tryonai-progress__bar");
+    const progressEl = $(".tryonai-progress");
     const loomEl = $(".tryonai-loom");
     const glyphEl = $(".tryonai-glyph");
     const glyphPathsEl = $(".tryonai-glyph__paths");
@@ -151,6 +169,10 @@
       journeyTimer: null,
       journeyStep: -1,
       journeyDone: false,
+      creepTimer: null,
+      lateLabelTimer: null,
+      lateLabelIndex: 0,
+      creeping: false,
       statusShiftTimer: null,
       glyphSwapTimer: null,
       abortController: null,
@@ -692,6 +714,17 @@
       const controller = new AbortController();
       state.abortController = controller;
 
+      // Absolute backstop so the UI can NEVER stay pinned on the generating stage:
+      // if neither a `completed` nor an `error` frame arrives within this ceiling
+      // (well above the ~120s server-side OpenAI timeout), the stream is stuck —
+      // e.g. an idle-but-open connection that never EOFs. Abort and recover. The
+      // flag lets the catch tell this apart from a user-initiated cancel.
+      let watchdogTimedOut = false;
+      const watchdog = window.setTimeout(() => {
+        watchdogTimedOut = true;
+        try { controller.abort(); } catch (_) { /* already settled */ }
+      }, 180000);
+
       // The scripted journey owns the entire generating UI; real preview/partial
       // frames are NOT revealed early — we unveil only on `completed`. We still
       // stash the latest bytes so the post-loop guard + timing log keep working.
@@ -779,17 +812,17 @@
               }
               if (evt.kind === "partial") {
                 if (t.firstPartial === null) t.firstPartial = performance.now();
-                lastB64 = evt.b64; // stash only — journey owns the visible UI
+                lastB64 = evt.b64; // stash only — single unveil owns the pixels
+                nudgeFromRealSignal("partial", evt.index || 0); // use timing only
               } else if (evt.kind === "preview") {
                 if (t.preview === null) t.preview = performance.now();
                 lastB64 = evt.b64; // stash only — no early reveal
+                nudgeFromRealSignal("preview"); // use timing only
               } else if (evt.kind === "completed") {
                 t.completed = performance.now();
                 lastB64 = evt.b64;
                 // The single unveil: end the journey, then wipe in the FINAL.
-                fastForwardJourney();
-                enterRevealFromB64(evt.b64, state.selfieFile);
-                await finishReveal(evt.b64);
+                await unveilFinal(evt.b64);
                 t.rendered = performance.now();
               } else if (evt.kind === "timing") {
                 serverTiming = evt;
@@ -803,6 +836,20 @@
         }
 
         if (!lastB64) throw new Error("No image returned");
+
+        // Safety net for the single-unveil design (the reveal above runs ONLY in
+        // the `completed` branch): if the stream ENDED after a preview/partial
+        // stashed `lastB64` but no terminal `completed` frame was ever processed
+        // — a dropped connection or App-Proxy idle-timeout mid-generation, or a
+        // `completed` frame that failed to JSON.parse and got silently skipped —
+        // finishReveal() would otherwise never run and the widget would sit on the
+        // generating stage forever (bar pinned near the creep cap). Unveil the best
+        // image we actually received. `t.completed` is set ONLY by the completed
+        // branch, so the normal success path skips this and never double-reveals.
+        if (t.completed === null) {
+          await unveilFinal(lastB64);
+          t.rendered = performance.now();
+        }
 
         const delta = (a, b) =>
           a === null || b === null ? null : Math.round(a - b);
@@ -830,12 +877,32 @@
         // eslint-disable-next-line no-console
         console.log("[tryonai]", JSON.stringify(log));
       } catch (err) {
-        if (err && err.name === "AbortError") { stopProgress(); return; }
+        if (err && err.name === "AbortError") {
+          // A watchdog timeout reaches here too (it aborts the controller). Unlike
+          // a user cancel, it must not leave the widget spinning: reveal the best
+          // image we received, or surface a friendly timeout if we got nothing.
+          if (watchdogTimedOut && t.completed === null) {
+            if (lastB64) {
+              try {
+                await unveilFinal(lastB64);
+                return;
+              } catch (_) { /* fall through to the error message below */ }
+            }
+            stopProgress();
+            state.generating = false;
+            setStage("compose");
+            showError("This try-on took too long. Please try again.");
+            return;
+          }
+          stopProgress();
+          return;
+        }
         stopProgress();
         state.generating = false;
         setStage("compose");
         showError((err && err.message) || "Generation failed", err && err.code);
       } finally {
+        window.clearTimeout(watchdog);
         state.abortController = null;
       }
     }
@@ -917,10 +984,12 @@
     }
 
     function setProgressTarget(pct) {
-      // Monotonic + capped below 100 (only finishReveal writes 100).
+      // Monotonic + capped below 100 (only finishReveal writes 100). The cap is
+      // CREEP_CAP so the creep phase can inch past the journey's 90 ceiling;
+      // scripted/nudge inputs are all <= JOURNEY_HOLD_PCT, so they self-limit.
       state.progressTarget = Math.max(
         state.progressTarget || 0,
-        Math.min(JOURNEY_HOLD_PCT, pct),
+        Math.min(CREEP_CAP, pct),
       );
     }
 
@@ -953,14 +1022,51 @@
       }
     }
 
+    // Largest scripted step whose target is still <= floor — used to keep the
+    // label in sync with the bar when a real signal races us ahead.
+    function journeyStepForFloor(floor) {
+      let idx = 0;
+      for (let i = 0; i < JOURNEY.length; i++) {
+        if (JOURNEY[i].to <= floor) idx = i;
+      }
+      return idx;
+    }
+
+    // A real backend event (preview / partial) means the model is genuinely far
+    // along — pull the bar forward to a matching FLOOR (forward-only, no pixels
+    // shown) so a fast generation stops crawling the scripted timeline. The
+    // scripted journey is the floor; this is the accelerator; creep is the net.
+    function nudgeFromRealSignal(kind, index) {
+      if (state.journeyDone) return;
+      let floor;
+      if (kind === "preview") {
+        floor = 88; // a complete (low-res) image exists — we're close
+      } else if (kind === "partial") {
+        floor = index >= 2 ? 88 : index === 1 ? 84 : 78;
+      } else {
+        return;
+      }
+      const stepIdx = journeyStepForFloor(floor);
+      if (stepIdx > state.journeyStep) applyJourneyStep(stepIdx);
+      setProgressTarget(floor);
+      // Preview = essentially done generating; enter the calm creep early so the
+      // bar/label keep moving through the final stretch.
+      if (kind === "preview") startCreep();
+    }
+
     function advanceJourney() {
       state.journeyTimer = null;
-      if (state.journeyDone) return;
+      if (state.journeyDone || state.creeping) return; // creep owns the UI now
       const next = state.journeyStep + 1;
       if (next >= JOURNEY.length) return;
       applyJourneyStep(next);
       const step = JOURNEY[next];
-      if (step.hold) return; // terminal: hold here until the real `completed`
+      if (step.hold) {
+        // Terminal scripted step reached: hand off to the creep so the bar keeps
+        // inching forward (and the label keeps rotating) until `completed`.
+        startCreep();
+        return;
+      }
       const followon = JOURNEY[next + 1];
       if (followon) {
         state.journeyTimer = window.setTimeout(
@@ -985,11 +1091,70 @@
       }
     }
 
+    // The wait outran the scripted journey: keep the bar alive instead of
+    // freezing at the hold cap. A slow timer raises progressTarget toward
+    // CREEP_CAP along a DECELERATING curve (each tick closes a fraction of the
+    // remaining gap), so the bar always inches forward yet visibly slows the
+    // longer it waits — honest about "almost done, not done". In parallel a
+    // label cycle keeps the status line + glyph changing. Idempotent.
+    function startCreep() {
+      if (state.creeping || state.journeyDone) return;
+      state.creeping = true;
+      // Cancel any pending scripted advance + pin to terminal so a late timer
+      // can't flip the label back under the creep's rotation.
+      if (state.journeyTimer) clearTimeout(state.journeyTimer);
+      state.journeyTimer = null;
+      state.journeyStep = JOURNEY.length - 1;
+      if (progressEl) progressEl.classList.add("is-finishing");
+
+      const reduce =
+        !!window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      const creepTick = () => {
+        const t = state.progressTarget;
+        if (t < CREEP_CAP - 0.1) setProgressTarget(t + (CREEP_CAP - t) * 0.06);
+        state.creepTimer = window.setTimeout(creepTick, 600);
+      };
+      state.creepTimer = window.setTimeout(creepTick, 600);
+
+      // Rotate the calm finish copy; first entry already on screen from the
+      // terminal step, so begin at the next one. Hold on the last label.
+      state.lateLabelIndex = 0;
+      const rotate = () => {
+        state.lateLabelIndex += 1;
+        const entry = CREEP_LABELS[
+          Math.min(state.lateLabelIndex, CREEP_LABELS.length - 1)
+        ];
+        setStatusLabel(entry.label);
+        setGlyph(entry.icon);
+        if (loomEl) {
+          loomEl.classList.remove("is-pulsing");
+          void loomEl.offsetWidth;
+          loomEl.classList.add("is-pulsing");
+        }
+        if (state.lateLabelIndex < CREEP_LABELS.length - 1) {
+          state.lateLabelTimer = window.setTimeout(rotate, reduce ? 5200 : 3500);
+        }
+      };
+      state.lateLabelTimer = window.setTimeout(rotate, reduce ? 5200 : 3500);
+    }
+
+    function stopCreep() {
+      if (state.creepTimer) clearTimeout(state.creepTimer);
+      if (state.lateLabelTimer) clearTimeout(state.lateLabelTimer);
+      state.creepTimer = null;
+      state.lateLabelTimer = null;
+      state.creeping = false;
+      if (progressEl) progressEl.classList.remove("is-finishing");
+    }
+
     // Completion arrived: run the rest of the script instantly so the reveal
     // never looks cut off mid-step. Fills to the hold cap — finishReveal owns 100.
     function fastForwardJourney() {
       if (state.journeyTimer) clearTimeout(state.journeyTimer);
       state.journeyTimer = null;
+      stopCreep();
       state.journeyDone = true;
       state.journeyStep = JOURNEY.length - 1;
       setProgressTarget(JOURNEY_HOLD_PCT);
@@ -1009,6 +1174,7 @@
       }
       compare.classList.remove("is-developing");
       delete compare.dataset.refine;
+      stopCreep();
 
       startProgressLoop();
       startJourney();
@@ -1019,6 +1185,7 @@
       if (state.journeyTimer) clearTimeout(state.journeyTimer);
       if (state.statusShiftTimer) clearTimeout(state.statusShiftTimer);
       if (state.glyphSwapTimer) clearTimeout(state.glyphSwapTimer);
+      stopCreep();
       state.progressRaf = null;
       state.journeyTimer = null;
     }
@@ -1047,6 +1214,16 @@
           compare.classList.add("is-wiping");
         });
       });
+    }
+
+    // The single unveil: fast-forward the scripted journey, swap in the image,
+    // then finish (writes 100%, clears the generating state, reveals). Shared by
+    // the `completed` frame and by the stream-ended / watchdog fallbacks so the
+    // widget ALWAYS reaches a terminal revealed state instead of hanging.
+    async function unveilFinal(b64) {
+      fastForwardJourney();
+      enterRevealFromB64(b64, state.selfieFile);
+      await finishReveal(b64);
     }
 
     async function finishReveal(b64) {

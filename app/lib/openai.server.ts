@@ -62,11 +62,26 @@ function getClient(): OpenAI {
   return client;
 }
 
+export interface GarmentInput {
+  buffer: Buffer;
+  mimeType: string;
+  /** e.g. "top", "trousers", "shoes" — used to build the multi-garment prompt. */
+  label?: string;
+}
+
 export interface TryOnInput {
   selfie: Buffer;
   selfieMimeType: string;
   garment: Buffer;
   garmentMimeType: string;
+  /**
+   * Extra garments for an OUTFIT try-on (the Stylist). When present, all garments
+   * are composited onto the person in one generation and an outfit prompt is used.
+   * Omitted for the single-garment try-on, which stays byte-identical.
+   */
+  additionalGarments?: GarmentInput[];
+  /** Slot labels aligned to [garment, ...additionalGarments] for the prompt. */
+  garmentLabels?: string[];
   prompt?: string;
   quality?: "low" | "medium" | "high";
   size?: "1024x1024" | "1024x1536" | "1536x1024";
@@ -170,22 +185,53 @@ function parseHeadStartMs(raw: string | undefined, fallback: number): number {
 const DEFAULT_PROMPT =
   "Photorealistic full-body editorial photograph: the person from the first image wearing the garment from the second image. Preserve the person's face, hair, skin tone, body proportions, and pose exactly. Keep the original background and lighting from the first image - do not invent a new scene. Fit the garment naturally with realistic fabric drape, wrinkles, and shadows that match the existing lighting direction. Match the garment's color, pattern, logos, stitching, and texture from the reference image precisely. No text, no watermarks. Studio-quality fashion editorial finish.";
 
+// Builds the prompt for a COMBINED outfit try-on, where images 2..N are separate
+// garments to be worn together. Labels (top/trousers/shoes…) align to images 2..N.
+export function buildOutfitPrompt(labels?: string[]): string {
+  const refs =
+    labels && labels.length > 0
+      ? labels.map((l, i) => `the ${l} from image ${i + 2}`).join(", ")
+      : "every garment from images 2 onward";
+  return (
+    "Photorealistic full-body editorial photograph: the person from image 1 wearing " +
+    `this complete outfit together — ${refs}. Dress them in ALL of these garments at ` +
+    "once, layered correctly and naturally (tops tucked or untucked sensibly, bottoms " +
+    "below tops, shoes on the feet). Preserve the person's face, hair, skin tone, body " +
+    "proportions, and pose exactly. Keep the original background and lighting from image 1 " +
+    "- do not invent a new scene. Match each garment's color, pattern, logos, stitching, " +
+    "and texture precisely from its own reference image. Realistic fabric drape, wrinkles, " +
+    "and shadows consistent with the lighting. No text, no watermarks. Studio-quality " +
+    "fashion editorial finish."
+  );
+}
+
 export async function* generateTryOn({
   selfie,
   selfieMimeType,
   garment,
   garmentMimeType,
-  prompt = DEFAULT_PROMPT,
+  additionalGarments,
+  garmentLabels,
+  prompt,
   quality = "medium",
   size = "1024x1536",
   signal,
   user,
 }: TryOnInput): AsyncGenerator<TryOnStreamEvent, void, void> {
   const openai = getClient();
-  const [selfieFile, garmentFile] = await Promise.all([
+  const garmentInputs: GarmentInput[] = [
+    { buffer: garment, mimeType: garmentMimeType },
+    ...(additionalGarments ?? []),
+  ];
+  const [selfieFile, ...garmentFiles] = await Promise.all([
     toImageFile(selfie, "selfie", selfieMimeType),
-    toImageFile(garment, "garment", garmentMimeType),
+    ...garmentInputs.map((g, i) => toImageFile(g.buffer, `garment${i + 1}`, g.mimeType)),
   ]);
+  // image[0] = person; image[1..N] = garment(s). Single-garment is the N=1 case.
+  const imageInputs = [selfieFile, ...garmentFiles];
+  const effectivePrompt =
+    prompt ??
+    (garmentFiles.length > 1 ? buildOutfitPrompt(garmentLabels) : DEFAULT_PROMPT);
 
   const queue = new AsyncQueue<TryOnQueueItem>();
   const previewSize = previewSizeFor(size);
@@ -279,8 +325,8 @@ export async function* generateTryOn({
     try {
       lowB64 = await runImageEditPass({
         openai,
-        image: [selfieFile, garmentFile],
-        prompt,
+        image: imageInputs,
+        prompt: effectivePrompt,
         size: previewSize,
         quality: "low",
         partialImages: 0,
@@ -306,8 +352,8 @@ export async function* generateTryOn({
       await sleep(PREVIEW_HEAD_START_MS, mediumAbort.signal);
       const b64 = await runImageEditPass({
         openai,
-        image: [selfieFile, garmentFile],
-        prompt,
+        image: imageInputs,
+        prompt: effectivePrompt,
         size,
         quality,
         partialImages: 3,
@@ -554,4 +600,84 @@ function sleep(ms: number, signal: AbortSignal) {
 
 function abortError() {
   return new DOMException("The operation was aborted.", "AbortError");
+}
+
+// ---- layered outfit try-on ("Refine fit") ----------------------------------
+//
+// Higher-fidelity alternative to the combined pass: dress the person one garment
+// at a time, feeding each result back in as the base for the next. More reliable
+// composition for 3-4 piece outfits, at ~N passes of cost. Emits each layer as it
+// completes (progressive reveal) and a final usage event for COGS.
+
+export type OutfitLayeredEvent =
+  | { kind: "layer"; index: number; total: number; b64: string }
+  | { kind: "completed"; b64: string }
+  | { kind: "usage"; usages: Array<TryOnUsage | null>; openaiMs: number | null }
+  | { kind: "error"; error: unknown };
+
+export async function* generateOutfitLayered({
+  selfie,
+  selfieMimeType,
+  garments,
+  size = "1024x1536",
+  quality = "medium",
+  signal,
+  user,
+}: {
+  selfie: Buffer;
+  selfieMimeType: string;
+  garments: GarmentInput[];
+  size?: "1024x1536" | "1536x1024";
+  quality?: TryOnQuality;
+  signal?: AbortSignal;
+  user?: string;
+}): AsyncGenerator<OutfitLayeredEvent, void, void> {
+  const openai = getClient();
+  if (garments.length === 0) throw new Error("generateOutfitLayered: no garments");
+  const effectiveSignal = signal ?? new AbortController().signal;
+
+  let baseBuf = selfie;
+  let baseMime = selfieMimeType;
+  const usages: Array<TryOnUsage | null> = [];
+  const tStart = performance.now();
+
+  try {
+    for (let i = 0; i < garments.length; i++) {
+      const g = garments[i];
+      const label = g.label ?? "garment";
+      const [baseFile, garmentFile] = await Promise.all([
+        toImageFile(baseBuf, "base", baseMime),
+        toImageFile(g.buffer, "garment", g.mimeType),
+      ]);
+      const timing = createPassTiming(quality, size);
+      const prompt =
+        "Photorealistic full-body photograph: keep the person, their face, body, " +
+        "pose, and the background from image 1 exactly, and additionally put on the " +
+        `${label} from image 2, fitted and layered naturally over what they already ` +
+        `wear. Match the ${label}'s color, pattern, and texture precisely. Realistic ` +
+        "drape and shadows. No text, no watermarks.";
+      const b64 = await runImageEditPass({
+        openai,
+        image: [baseFile, garmentFile],
+        prompt,
+        size,
+        quality,
+        partialImages: 0,
+        signal: effectiveSignal,
+        timing,
+        user,
+      });
+      usages.push(timing.usage);
+      baseBuf = Buffer.from(b64, "base64");
+      baseMime = "image/jpeg";
+      if (i < garments.length - 1) {
+        yield { kind: "layer", index: i, total: garments.length, b64 };
+      } else {
+        yield { kind: "completed", b64 };
+      }
+    }
+    yield { kind: "usage", usages, openaiMs: Math.round(performance.now() - tStart) };
+  } catch (err) {
+    yield { kind: "error", error: err };
+  }
 }

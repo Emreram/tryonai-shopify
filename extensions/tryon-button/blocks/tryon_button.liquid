@@ -186,7 +186,66 @@
     </div>
   </div>
 </div>
+
+  {% comment %} AI Outfit Stylist + Size Recommender — ship dark; merchant opt-in
+     via the block settings below. Both render on the shared kit so they look and
+     load exactly like the try-on. {% endcomment %}
+  {% if block.settings.show_outfit_button or block.settings.show_size_button %}
+    {{ 'tryonai-kit.css' | asset_url | stylesheet_tag }}
+  {% endif %}
+
+  {% if block.settings.show_outfit_button %}
+  {{ 'outfit.css' | asset_url | stylesheet_tag }}
+  <div
+    class="tryonai-outfit-root tryonai-kit"
+    data-theme="{{ block.settings.ui_theme | default: 'atelier' }}"
+    data-button-shape="{{ block.settings.button_shape | default: 'pill' }}"
+    data-product-id="{{ product.id }}"
+    data-product-handle="{{ product.handle }}"
+    data-product-title="{{ product.title | escape }}"
+    data-product-image-url="{% if tryon_product_image %}{{ tryon_product_image | image_url: width: 1024 }}{% endif %}"
+    data-product-variant-id="{{ tryon_variant_id }}"
+    {% if tryon_accent != blank %}style="--tryonai-accent: {{ tryon_accent }};"{% endif %}
+    {{ block.shopify_attributes }}
+  >
+    <button type="button" class="tryonai-k-launcher" aria-haspopup="dialog">
+      <span class="tryonai-k-launcher__glyph" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M18.5 14.5l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg>
+      </span>
+      <span>{{ block.settings.outfit_button_label | default: 'Help me pick an outfit' }}</span>
+    </button>
+  </div>
+  {% endif %}
+
+  {% if block.settings.show_size_button %}
+  {{ 'size.css' | asset_url | stylesheet_tag }}
+  <div
+    class="tryonai-size-root tryonai-kit"
+    data-theme="{{ block.settings.ui_theme | default: 'atelier' }}"
+    data-button-shape="{{ block.settings.button_shape | default: 'pill' }}"
+    data-product-id="{{ product.id }}"
+    data-product-handle="{{ product.handle }}"
+    data-product-title="{{ product.title | escape }}"
+    data-product-image-url="{% if tryon_product_image %}{{ tryon_product_image | image_url: width: 1024 }}{% endif %}"
+    data-product-variant-id="{{ tryon_variant_id }}"
+    {% if tryon_accent != blank %}style="--tryonai-accent: {{ tryon_accent }};"{% endif %}
+    {{ block.shopify_attributes }}
+  >
+    <button type="button" class="tryonai-k-launcher" aria-haspopup="dialog">
+      <span class="tryonai-k-launcher__glyph" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16v8H4z"/><path d="M8 8v3M12 8v4M16 8v3"/></svg>
+      </span>
+      <span>{{ block.settings.size_button_label | default: 'Find my size' }}</span>
+    </button>
+  </div>
+  {% endif %}
 {% endif %}
+
+{% if block.settings.show_outfit_button or block.settings.show_size_button %}
+  <script src="{{ 'tryonai-kit.js' | asset_url }}" defer></script>
+{% endif %}
+{% if block.settings.show_size_button %}<script src="{{ 'size.js' | asset_url }}" defer></script>{% endif %}
+{% if block.settings.show_outfit_button %}<script src="{{ 'outfit.js' | asset_url }}" defer></script>{% endif %}
 
 <script src="{{ 'tryon.js' | asset_url }}" defer></script>
 
@@ -241,6 +300,40 @@
       "type": "color",
       "id": "accent_color",
       "label": "Accent color (optional — overrides the style's accent)"
+    },
+    {
+      "type": "header",
+      "content": "AI Outfit Stylist (beta)"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_outfit_button",
+      "label": "Show the \"Help me pick an outfit\" button",
+      "info": "Adds an AI stylist that builds a full outfit from your catalog and lets shoppers try the whole look on. Leave this OFF until you've been told the feature is live for your store.",
+      "default": false
+    },
+    {
+      "type": "text",
+      "id": "outfit_button_label",
+      "label": "Outfit button label",
+      "default": "Help me pick an outfit"
+    },
+    {
+      "type": "header",
+      "content": "AI Size Recommender (beta)"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_size_button",
+      "label": "Show the \"Find my size\" button",
+      "info": "Adds an AI size finder: the shopper enters their measurements once and gets a recommended size per product. Leave this OFF until you've been told the feature is live for your store.",
+      "default": false
+    },
+    {
+      "type": "text",
+      "id": "size_button_label",
+      "label": "Size button label",
+      "default": "Find my size"
     }
   ]
 }

@@ -93,7 +93,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ? billing.trialStartedAt
     : billing.currentCycleStart ?? billing.trialStartedAt ?? new Date(0);
   const used = await db.usageLog.count({
-    where: { shop, cycleStart, status: "ok" },
+    where: { shop, kind: "tryon", cycleStart, status: "ok" },
   });
 
   const planDef = PLANS[plan];
@@ -109,6 +109,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ? await db.usageLog.count({
         where: {
           shop,
+          kind: "tryon",
           createdAt: { gte: billing.trialStartedAt },
           status: "ok",
         },

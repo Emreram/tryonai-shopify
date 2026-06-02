@@ -44,6 +44,17 @@ export async function recordCartEvent(
     return { status: "unverified" };
   }
 
+  // The unique key is (shop, requestId, variantId) so each piece of an outfit
+  // (which shares one requestId) counts once. Postgres treats NULLs as distinct,
+  // so a null variantId can't rely on the constraint — guard it explicitly.
+  if (input.variantId === null) {
+    const existing = await db.cartEvent.findFirst({
+      where: { shop: input.shop, requestId: input.requestId, variantId: null },
+      select: { id: true },
+    });
+    if (existing) return { status: "duplicate" };
+  }
+
   try {
     await db.cartEvent.create({
       data: {
