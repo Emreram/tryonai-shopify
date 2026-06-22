@@ -79,6 +79,66 @@ export async function dailyCostCeiling(): Promise<{
 
 type BlockReason = "trial_expired" | "cap_reached" | "cost_ceiling" | "rate_limited";
 
+/** A block attributable to the merchant's own plan allowance (vs. a transient
+ *  rate-limit or the global cost fuse). Shared by the image gate and the
+ *  text-tool routes so "tools available" is one consistent concept. */
+export type PlanBlockReason = "trial_expired" | "cap_reached";
+
+export interface PlanAccess {
+  /** kind:"tryon" rows consumed this cycle. */
+  used: number;
+  /** Hard cap for the plan (or capOverride). */
+  cap: number;
+  /** null when the shop may generate; otherwise why it's blocked. */
+  blocked: PlanBlockReason | null;
+}
+
+/**
+ * Side-effect-free trial/cap eligibility check. Counts only kind:"tryon" rows
+ * (the metering rule) and applies the same trial-age/trial-count/cap thresholds
+ * as the image gate. Used by enforceGenerationGate AND by the text-tool routes
+ * (outfit stylist, size chart) so an expired/over-cap shop can't use ANY tool.
+ *
+ * A null trialStartedAt (no billing row yet — a brand-new shop) is treated as
+ * "trial just started" and never trips trial_expired.
+ */
+export async function checkPlanAccess(args: {
+  shop: string;
+  plan: PlanKey;
+  trialStartedAt: Date | null;
+  cycleStart: Date;
+  capOverride: number | null;
+}): Promise<PlanAccess> {
+  const cap = computeCap(args.plan, args.capOverride);
+
+  const [trialCount, used] = await Promise.all([
+    args.plan === "trial" && args.trialStartedAt
+      ? db.usageLog.count({
+          where: {
+            shop: args.shop,
+            kind: "tryon",
+            createdAt: { gte: args.trialStartedAt },
+            status: "ok",
+          },
+        })
+      : Promise.resolve(0),
+    db.usageLog.count({
+      where: { shop: args.shop, kind: "tryon", cycleStart: args.cycleStart, status: "ok" },
+    }),
+  ]);
+
+  let blocked: PlanBlockReason | null = null;
+  if (args.plan === "trial" && args.trialStartedAt) {
+    const trialAge = Date.now() - args.trialStartedAt.getTime();
+    if (trialAge > TRIAL_DAYS * 86_400_000 || trialCount >= TRIAL_TRYONS) {
+      blocked = "trial_expired";
+    }
+  }
+  if (!blocked && used >= cap) blocked = "cap_reached";
+
+  return { used, cap, blocked };
+}
+
 async function writeBlockedLog(args: {
   shop: string;
   reqId: string;
@@ -175,38 +235,27 @@ export async function enforceGenerationGate(request: Request): Promise<GateResul
     billing.currentCycleStart ?? billing.trialStartedAt ?? new Date(0);
   const reqId = requestId();
 
-  const cap = computeCap(plan, settings?.capOverride ?? null);
-
   // Counts mirror the metering rule: only kind:"tryon" rows consume the cap.
-  const [trialCount, used] = await Promise.all([
-    plan === "trial"
-      ? db.usageLog.count({
-          where: {
-            shop,
-            kind: "tryon",
-            createdAt: { gte: billing.trialStartedAt },
-            status: "ok",
-          },
-        })
-      : Promise.resolve(0),
-    db.usageLog.count({ where: { shop, kind: "tryon", cycleStart, status: "ok" } }),
-  ]);
+  const { used, cap, blocked } = await checkPlanAccess({
+    shop,
+    plan,
+    trialStartedAt: billing.trialStartedAt,
+    cycleStart,
+    capOverride: settings?.capOverride ?? null,
+  });
 
-  if (plan === "trial") {
-    const trialAge = Date.now() - billing.trialStartedAt.getTime();
-    if (trialAge > TRIAL_DAYS * 86_400_000 || trialCount >= TRIAL_TRYONS) {
-      await writeBlockedLog({ shop, reqId, plan, cycleStart, reason: "trial_expired" });
-      return {
-        ok: false,
-        response: json(
-          { error: "trial_expired", upgradeUrl: "/app/billing" },
-          { status: 402 },
-        ),
-      };
-    }
+  if (blocked === "trial_expired") {
+    await writeBlockedLog({ shop, reqId, plan, cycleStart, reason: "trial_expired" });
+    return {
+      ok: false,
+      response: json(
+        { error: "trial_expired", upgradeUrl: "/app/billing" },
+        { status: 402 },
+      ),
+    };
   }
 
-  if (used >= cap) {
+  if (blocked === "cap_reached") {
     await writeBlockedLog({ shop, reqId, plan, cycleStart, reason: "cap_reached" });
     return {
       ok: false,

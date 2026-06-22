@@ -18,7 +18,7 @@ import {
 import db from "../db.server";
 import { isPlanKey, requestId, type PlanKey } from "../lib/plans";
 import { outfitBackendEnabled } from "../lib/outfitFlags.server";
-import { dailyCostCeiling } from "../lib/tryonGate.server";
+import { checkPlanAccess, dailyCostCeiling } from "../lib/tryonGate.server";
 import {
   generateOutfit,
   type AnchorInput,
@@ -100,6 +100,25 @@ export async function action({ request }: ActionFunctionArgs) {
   const plan: PlanKey = billing && isPlanKey(billing.plan) ? billing.plan : "trial";
   const cycleStart =
     billing?.currentCycleStart ?? billing?.trialStartedAt ?? new Date();
+
+  // Same trial/cap gate as the image tools: a shop whose trial has ended (or a
+  // paid shop over its monthly cap) can't use ANY tool, the stylist included.
+  const access = await checkPlanAccess({
+    shop,
+    plan,
+    trialStartedAt: billing?.trialStartedAt ?? null,
+    cycleStart,
+    capOverride: settings?.capOverride ?? null,
+  });
+  if (access.blocked === "trial_expired") {
+    return json({ error: "trial_expired", upgradeUrl: "/app/billing" }, { status: 402 });
+  }
+  if (access.blocked === "cap_reached") {
+    return json(
+      { error: "cap_reached", used: access.used, cap: access.cap, upgradeUrl: "/app/billing" },
+      { status: 429 },
+    );
+  }
 
   // Rate limit (shared with try-on): protects the catalog fetch + model call.
   const firstXff =
