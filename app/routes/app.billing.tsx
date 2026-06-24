@@ -196,7 +196,7 @@ export default function BillingPage() {
           }
         : null;
 
-  const ctaLabel = data.onTrial ? "View plans" : "Change plan";
+  const ctaLabel = data.onTrial ? "Start your plan" : "Change plan";
 
   return (
     <s-page heading="Billing & Plan">
@@ -257,7 +257,10 @@ export default function BillingPage() {
               </s-text>
             </s-paragraph>
             <s-paragraph>
-              Choose a plan to keep generating after your trial ends.
+              Start a plan now to lock in uninterrupted try-ons. Your first{" "}
+              {TRIAL_DAYS} days stay free - Shopify only charges after the trial
+              and then renews your plan automatically each cycle, so there&apos;s
+              no gap when the trial ends.
             </s-paragraph>
           </s-stack>
         ) : (
