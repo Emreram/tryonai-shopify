@@ -219,20 +219,6 @@
 .tryonai-k-link { background: none; border: 0; color: var(--tk-muted); font: 450 14px var(--tk-serif); cursor: pointer; }
 .tryonai-k-link:hover { color: var(--tk-accent); }
 
-/* ---- cart-added confirmation (value the shopper just added) -------------- */
-.tryonai-k-cart-confirm {
-  display: flex; align-items: center; justify-content: center; gap: 10px;
-  margin: 0; padding: 15px 18px; text-align: center;
-  font: 400 16px var(--tk-serif); font-variation-settings: "opsz" 144; color: var(--tk-ink);
-  animation: tk-fade var(--tk-dur) var(--tk-ease) both;
-}
-.tryonai-k-cart-confirm__check {
-  display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center;
-  width: 24px; height: 24px; border-radius: 50%;
-  background: var(--tk-ink); color: var(--tk-bg-paper);
-}
-.tryonai-k-cart-confirm__text { font-style: italic; }
-
 /* ---- cards (outfit pieces / size results) -------------------------------- */
 .tryonai-k-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: 14px; }
 .tryonai-k-card { display: flex; flex-direction: column; background: var(--tk-bg-paper); border: 1px solid var(--tk-line-strong); border-radius: 10px; overflow: hidden; }

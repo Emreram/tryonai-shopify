@@ -221,12 +221,12 @@
       })
         .then(function (res) { if (!res.ok) throw new Error("add failed"); return res.json(); })
         .then(function (added) {
-          var addedItems = added && added.items ? added.items : [];
-          addedItems.forEach(function (it) {
+          (added && added.items ? added.items : []).forEach(function (it) {
             beacon(state.lastRequestId, it.variant_id || it.id, it);
           });
           ["tryonai:added-to-cart", "cart:refresh", "cart:updated"].forEach(function (n) { document.dispatchEvent(new CustomEvent(n)); });
-          K.confirmCartAdd(ui, addedItems);
+          if (btn) btn.textContent = "Added ✓";
+          setTimeout(ui.close, 900);
         })
         .catch(function () { if (btn) btn.disabled = false; ui.setError("Add to cart failed — please try on the page."); });
     }

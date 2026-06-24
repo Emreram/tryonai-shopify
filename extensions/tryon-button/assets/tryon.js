@@ -1427,17 +1427,14 @@
           document.dispatchEvent(new CustomEvent(name, { detail: { variantId } }))
         );
 
-        // Visible confirmation: button tick + a value line (how much was added
-        // and the new cart total), then close the modal.
+        // Visible confirmation on the button itself, then close the modal.
         const labelSpan = addToCartBtn.querySelector("span");
         const originalLabel = labelSpan ? labelSpan.textContent : "";
         if (labelSpan) labelSpan.textContent = "Added ✓";
-        showCartAdded(addedBody);
         setTimeout(() => {
           if (labelSpan) labelSpan.textContent = originalLabel;
-          removeCartConfirm();
           closeModal();
-        }, 2400);
+        }, 700);
       } catch (err) {
         showError(err.message || "Add to cart failed");
       } finally {
@@ -1493,65 +1490,6 @@
       } catch (_) {
         /* attribution must never affect the add-to-cart flow */
       }
-    }
-
-    // Shopper-facing confirmation of the value added: "Added <line total> to your
-    // cart · Cart total <cart total>". The line total comes from the /cart/add.js
-    // response; the cart total is fetched from /cart.js and appended when it
-    // resolves. Best-effort — never blocks or undoes the add-to-cart.
-    function showCartAdded(addedBody) {
-      const item =
-        addedBody && Array.isArray(addedBody.items) ? addedBody.items[0] : addedBody;
-      const lineCents = item
-        ? Number(item.final_line_price != null ? item.final_line_price : item.line_price)
-        : NaN;
-      const base = Number.isFinite(lineCents)
-        ? "Added " + fmtMoney(lineCents / 100) + " to your cart"
-        : "Added to your cart";
-
-      const actions = addToCartBtn.closest(".tryonai-actions");
-      let el = root.querySelector(".tryonai-cart-confirm");
-      if (!el && actions && actions.parentNode) {
-        el = document.createElement("p");
-        el.className = "tryonai-cart-confirm";
-        actions.parentNode.insertBefore(el, actions);
-      }
-      if (el) el.textContent = base;
-      announce(base);
-
-      fetchCartTotal().then((c) => {
-        if (c && c.cents != null) {
-          const full = base + " · Cart total " + fmtMoney(c.cents / 100);
-          if (el) el.textContent = full;
-          announce(full);
-        }
-      });
-    }
-
-    function removeCartConfirm() {
-      const el = root.querySelector(".tryonai-cart-confirm");
-      if (el && el.parentNode) el.parentNode.removeChild(el);
-    }
-
-    function fmtMoney(amount) {
-      const code =
-        (window.Shopify && window.Shopify.currency && window.Shopify.currency.active) || null;
-      const n = Number(amount) || 0;
-      if (code) {
-        try {
-          return new Intl.NumberFormat(undefined, { style: "currency", currency: code }).format(n);
-        } catch (_) {
-          /* fall through to plain formatting */
-        }
-      }
-      return n.toFixed(2);
-    }
-
-    function fetchCartTotal() {
-      return fetch("/cart.js", { credentials: "same-origin", headers: { Accept: "application/json" } })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((c) => ({ cents: c && typeof c.total_price === "number" ? c.total_price : null }))
-        .catch(() => ({ cents: null }));
     }
 
     function announce(text) {

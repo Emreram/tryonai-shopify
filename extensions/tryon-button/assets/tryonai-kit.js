@@ -35,57 +35,6 @@
     return n.toFixed(2);
   }
 
-  // Sum the line totals (in cents) of the items returned by /cart/add.js. Prefers
-  // final_line_price (after line discounts); falls back to line_price. Returns
-  // null when no usable price is present so callers can degrade gracefully.
-  function sumLineCents(items) {
-    var total = 0, any = false;
-    (items || []).forEach(function (it) {
-      var v = it && (it.final_line_price != null ? it.final_line_price : it.line_price);
-      var n = Number(v);
-      if (Number.isFinite(n)) { total += n; any = true; }
-    });
-    return any ? total : null;
-  }
-
-  // Read the live cart so we can show the shopper the new running total. Never
-  // throws — a failed/blocked /cart.js resolves to { cents: null } and the
-  // confirmation just omits the total.
-  function cartTotal() {
-    return fetchJson("/cart.js", { credentials: "same-origin", headers: { Accept: "application/json" } })
-      .then(function (r) {
-        var c = r && r.data;
-        return { cents: c && typeof c.total_price === "number" ? c.total_price : null };
-      });
-  }
-
-  // Shopper-facing confirmation after an add-to-cart: shows how much value was
-  // just added and (once /cart.js resolves) the new cart total, then auto-closes
-  // the modal. Renders into ui.foot so it sits where the CTA was.
-  function confirmCartAdd(ui, addedItems, opts) {
-    opts = opts || {};
-    var addedCents = sumLineCents(addedItems);
-    var base = addedCents != null ? ("Added " + money(addedCents / 100) + " to your cart") : "Added to your cart";
-
-    ui.foot.innerHTML =
-      '<p class="tryonai-k-cart-confirm">' +
-      '<span class="tryonai-k-cart-confirm__check" aria-hidden="true">' +
-      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg></span>' +
-      '<span class="tryonai-k-cart-confirm__text">' + esc(base) + "</span></p>";
-    var textEl = ui.foot.querySelector(".tryonai-k-cart-confirm__text");
-    ui.announce(base);
-
-    cartTotal().then(function (c) {
-      if (c && c.cents != null && textEl) {
-        var full = base + " · Cart total " + money(c.cents / 100);
-        textEl.textContent = full;
-        ui.announce(full);
-      }
-    });
-
-    setTimeout(function () { ui.close(); }, opts.closeMs || 2400);
-  }
-
   function pickSizeFromRatio(w, h) {
     if (!w || !h) return "1024x1536";
     return w / h > 1.05 ? "1536x1024" : "1024x1536";
@@ -308,8 +257,7 @@
 
   window.TryonaiKit = {
     GLYPHS: GLYPHS,
-    esc: esc, money: money, sumLineCents: sumLineCents, cartTotal: cartTotal, confirmCartAdd: confirmCartAdd,
-    pickSizeFromRatio: pickSizeFromRatio,
+    esc: esc, money: money, pickSizeFromRatio: pickSizeFromRatio,
     upgradeShopifyImage: upgradeShopifyImage, downsampleImage: downsampleImage, readSSE: readSSE,
     fetchJson: fetchJson, uiError: uiError,
     createModal: createModal, createJourney: createJourney,
