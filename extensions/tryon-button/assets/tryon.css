@@ -1114,6 +1114,22 @@
   color: var(--tryonai-ink);
 }
 
+/* ---------- cart-added confirmation (value the shopper just added) ---------- */
+.tryonai-cart-confirm {
+  margin: 0 0 4px;
+  padding: 12px 16px;
+  text-align: center;
+  font-family: var(--tryonai-serif);
+  font-style: italic;
+  font-size: 16px;
+  font-variation-settings: "opsz" 144;
+  letter-spacing: -0.005em;
+  color: var(--tryonai-ink);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--tryonai-accent) 7%, var(--tryonai-bg-paper));
+  animation: tryonai-stage-in var(--tryonai-dur) var(--tryonai-ease) both;
+}
+
 /* ---------- actions row ---------- */
 .tryonai-actions {
   display: flex;
