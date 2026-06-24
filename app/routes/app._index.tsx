@@ -169,8 +169,9 @@ export default function Index() {
         <s-banner tone="info" heading="You're on the Trial">
           {data.trialDaysRemaining} day
           {data.trialDaysRemaining === 1 ? "" : "s"} remaining -{" "}
-          {data.trialTryOnsUsed}/{TRIAL_TRYONS} try-ons used.{" "}
-          <s-link href="/app/billing">Choose a plan</s-link>
+          {data.trialTryOnsUsed}/{TRIAL_TRYONS} try-ons used. Start a plan now to
+          keep the same free trial and let it renew automatically afterward -{" "}
+          <s-link href="/app/billing">start your plan</s-link>.
         </s-banner>
       )}
 
@@ -224,11 +225,12 @@ export default function Index() {
               in the <em>Recent try-ons</em> list on this page.
             </li>
             <li>
-              <strong>Pick a paid plan when you&apos;re ready.</strong> The
-              trial covers {TRIAL_TRYONS} try-ons over {TRIAL_DAYS} days.
-              Upgrade from the{" "}
-              <s-link href="/app/billing">Billing tab</s-link> before either
-              limit is reached to keep generating.
+              <strong>Start your plan to keep it running automatically.</strong>{" "}
+              The trial covers {TRIAL_TRYONS} try-ons over {TRIAL_DAYS} days.
+              Pick a plan from the{" "}
+              <s-link href="/app/billing">Billing tab</s-link> now - the first{" "}
+              {TRIAL_DAYS} days stay free, then Shopify renews your plan
+              automatically so generation never stops when the trial ends.
             </li>
           </ol>
         </s-section>
@@ -301,7 +303,7 @@ export default function Index() {
             upgrade/downgrade in one click from the home screen.
           */}
           <s-button href={data.planPageUrl} target="_top" variant="primary">
-            {data.onTrial ? "View plans" : "Change plan"}
+            {data.onTrial ? "Start your plan" : "Change plan"}
           </s-button>
           <s-link href="/app/billing">Manage plan</s-link>
         </s-stack>
@@ -310,7 +312,9 @@ export default function Index() {
       <s-section slot="aside" heading="Get started">
         <s-unordered-list>
           <s-list-item>
-            <s-link href="/app/billing">Pick a paid plan</s-link>
+            <s-link href="/app/billing">
+              Start your plan ({TRIAL_DAYS} days free, auto-renews)
+            </s-link>
           </s-list-item>
           <s-list-item>
             <s-link href={data.themeEditorUrl} target="_top">
