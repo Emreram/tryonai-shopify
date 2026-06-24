@@ -1,0 +1,35 @@
+name: Deploy Shopify app
+
+# Publishes a new app version (including the tryon-button theme extension)
+# whenever main updates. Theme app extensions can only go live via
+# `shopify app deploy`, so this is what makes a merge to main reach the
+# storefront.
+#
+# Requires one repository secret:
+#   SHOPIFY_CLI_PARTNERS_TOKEN  — a Partners CLI token from
+#   https://partners.shopify.com → (org) → CLI token. The CLI reads it
+#   automatically and deploys non-interactively (no browser login).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: shopify-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Deploy to Shopify
+        env:
+          SHOPIFY_CLI_PARTNERS_TOKEN: ${{ secrets.SHOPIFY_CLI_PARTNERS_TOKEN }}
+        run: npx -y @shopify/cli@latest app deploy --force
