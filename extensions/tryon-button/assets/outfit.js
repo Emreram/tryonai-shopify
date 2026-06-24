@@ -39,6 +39,8 @@
       title: root.dataset.productTitle || "", image: normImg(root.dataset.productImageUrl), variantId: root.dataset.productVariantId || null,
     };
     launcher.addEventListener("click", function () { openOutfit(ctx, anchor, root); });
+    // Expose for the combined launcher (chooser) to start this flow directly.
+    root.__tryonaiOpen = function () { openOutfit(ctx, anchor, root); };
   }
 
   function openOutfit(ctx, anchor, root) {
