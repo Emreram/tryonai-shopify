@@ -104,6 +104,11 @@
    LAUNCHER — cream pill, ink stroke, inverts on hover.
    Backglow breathes behind the pill; a slow sheen sweeps across.
    ================================================================= */
+/* Combined mode: the try-on root stays in the DOM (so its JS inits + the modal
+   markup is present) but its own launcher is hidden; the combined button opens
+   the flow programmatically. */
+.tryonai-root.tryonai-headless .tryonai-launcher { display: none !important; }
+
 .tryonai-launcher {
   position: relative;
   isolation: isolate;

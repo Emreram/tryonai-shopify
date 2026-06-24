@@ -39,6 +39,10 @@
     launcher.addEventListener("click", function () {
       openSizeFlow([{ handle: product.handle, colorHint: null, title: product.title, image: product.image }], null, ctx);
     });
+    // Expose for the combined launcher (chooser) to start this flow directly.
+    root.__tryonaiOpen = function () {
+      openSizeFlow([{ handle: product.handle, colorHint: null, title: product.title, image: product.image }], null, ctx);
+    };
   }
 
   // Public API for outfit.js / tryon.js.

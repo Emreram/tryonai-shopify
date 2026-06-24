@@ -187,6 +187,9 @@
     setStage("idle");
 
     launcher.addEventListener("click", openModal);
+    // Expose this root's open fn so a combined launcher can start the flow
+    // directly (resolved at click time, so script load order doesn't matter).
+    root.__tryonaiOpen = openModal;
 
     // Click delegation lives on the modal (not root) because the modal is
     // portaled to <body> above — clicks inside it no longer bubble through

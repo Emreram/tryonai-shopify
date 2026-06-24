@@ -8,9 +8,12 @@
 {% assign tryon_variant_id = product.selected_or_first_available_variant.id %}
 {% assign tryon_accent = block.settings.accent_color %}
 
+{% assign tryon_combined = false %}
+{% if block.settings.button_layout == 'combined' %}{% assign tryon_combined = true %}{% endif %}
+
 {% if product %}
 <div
-  class="tryonai-root"
+  class="tryonai-root{% if tryon_combined %} tryonai-headless{% endif %}"
   data-stage="idle"
   data-theme="{{ block.settings.ui_theme | default: 'atelier' }}"
   data-button-shape="{{ block.settings.button_shape | default: 'pill' }}"
@@ -190,14 +193,14 @@
   {% comment %} AI Outfit Stylist + Size Recommender — ship dark; merchant opt-in
      via the block settings below. Both render on the shared kit so they look and
      load exactly like the try-on. {% endcomment %}
-  {% if block.settings.show_outfit_button or block.settings.show_size_button %}
+  {% if block.settings.show_outfit_button or block.settings.show_size_button or tryon_combined %}
     {{ 'tryonai-kit.css' | asset_url | stylesheet_tag }}
   {% endif %}
 
   {% if block.settings.show_outfit_button %}
   {{ 'outfit.css' | asset_url | stylesheet_tag }}
   <div
-    class="tryonai-outfit-root tryonai-kit"
+    class="tryonai-outfit-root tryonai-kit{% if tryon_combined %} tryonai-headless{% endif %}"
     data-theme="{{ block.settings.ui_theme | default: 'atelier' }}"
     data-button-shape="{{ block.settings.button_shape | default: 'pill' }}"
     data-product-id="{{ product.id }}"
@@ -220,7 +223,7 @@
   {% if block.settings.show_size_button %}
   {{ 'size.css' | asset_url | stylesheet_tag }}
   <div
-    class="tryonai-size-root tryonai-kit"
+    class="tryonai-size-root tryonai-kit{% if tryon_combined %} tryonai-headless{% endif %}"
     data-theme="{{ block.settings.ui_theme | default: 'atelier' }}"
     data-button-shape="{{ block.settings.button_shape | default: 'pill' }}"
     data-product-id="{{ product.id }}"
@@ -239,15 +242,41 @@
     </button>
   </div>
   {% endif %}
+
+  {% comment %} Combined launcher: one button that opens a chooser for the
+     enabled tools. The feature roots above still render (headless) so their JS
+     inits; their own buttons are hidden via CSS. {% endcomment %}
+  {% if tryon_combined %}
+  <div
+    class="tryonai-combined-root tryonai-kit"
+    data-theme="{{ block.settings.ui_theme | default: 'atelier' }}"
+    data-button-shape="{{ block.settings.button_shape | default: 'pill' }}"
+    data-block-id="{{ block.id }}"
+    data-chooser-title="{{ block.settings.chooser_title | default: 'What would you like to do?' | escape }}"
+    data-label-tryon="{{ block.settings.button_label | default: 'Try it on' | escape }}"
+    data-label-outfit="{{ block.settings.outfit_button_label | default: 'Help me pick an outfit' | escape }}"
+    data-label-size="{{ block.settings.size_button_label | default: 'Find my size' | escape }}"
+    {% if tryon_accent != blank %}style="--tryonai-accent: {{ tryon_accent }};"{% endif %}
+    {{ block.shopify_attributes }}
+  >
+    <button type="button" class="tryonai-k-launcher tryonai-combined-launcher" aria-haspopup="dialog">
+      <span class="tryonai-k-launcher__glyph" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M18.5 14.5l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg>
+      </span>
+      <span>{{ block.settings.combined_button_label | default: 'Style me with AI' }}</span>
+    </button>
+  </div>
+  {% endif %}
 {% endif %}
 
-{% if block.settings.show_outfit_button or block.settings.show_size_button %}
+{% if block.settings.show_outfit_button or block.settings.show_size_button or tryon_combined %}
   <script src="{{ 'tryonai-kit.js' | asset_url }}" defer></script>
 {% endif %}
 {% if block.settings.show_size_button %}<script src="{{ 'size.js' | asset_url }}" defer></script>{% endif %}
 {% if block.settings.show_outfit_button %}<script src="{{ 'outfit.js' | asset_url }}" defer></script>{% endif %}
 
 <script src="{{ 'tryon.js' | asset_url }}" defer></script>
+{% if tryon_combined %}<script src="{{ 'combined.js' | asset_url }}" defer></script>{% endif %}
 
 {% schema %}
 {
@@ -300,6 +329,35 @@
       "type": "color",
       "id": "accent_color",
       "label": "Accent color (optional — overrides the style's accent)"
+    },
+    {
+      "type": "header",
+      "content": "Button layout"
+    },
+    {
+      "type": "select",
+      "id": "button_layout",
+      "label": "How buttons appear",
+      "info": "Separate (default) shows each enabled feature as its own button. Combined shows one button that opens a chooser so shoppers pick Virtual Try-On, the Outfit Stylist, or the Size Recommender. Combined only groups the features you've turned on below.",
+      "options": [
+        { "value": "separate", "label": "Separate buttons (default)" },
+        { "value": "combined", "label": "One combined button with a chooser" }
+      ],
+      "default": "separate"
+    },
+    {
+      "type": "text",
+      "id": "combined_button_label",
+      "label": "Combined button label",
+      "info": "Shown only when \"One combined button\" is selected.",
+      "default": "Style me with AI"
+    },
+    {
+      "type": "text",
+      "id": "chooser_title",
+      "label": "Chooser heading",
+      "info": "Shown at the top of the chooser when more than one feature is enabled.",
+      "default": "What would you like to do?"
     },
     {
       "type": "header",
