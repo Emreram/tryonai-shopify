@@ -70,18 +70,22 @@
     function openChooser(list) {
       var ui = K.createModal({ theme: ctx.theme, shape: ctx.shape, accent: ctx.accent });
       var title = root.dataset.chooserTitle || "What would you like to do?";
+      var showIcon = root.dataset.showIcon !== "false";
       ui.modal.setAttribute("aria-label", title);
 
       ui.content.innerHTML =
         '<div class="tryonai-k-intro"><h2 class="tryonai-k-h">' + K.esc(title) + "</h2></div>" +
         '<div class="tryonai-chooser" role="list">' +
         list.map(function (f) {
+          var glyph = showIcon
+            ? '<span class="tryonai-chooser__glyph" aria-hidden="true">' +
+              '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><g>' +
+              (K.GLYPHS[f.glyph] || K.GLYPHS.finish) +
+              "</g></svg></span>"
+            : "";
           return (
             '<button type="button" class="tryonai-chooser__item" role="listitem" data-choose="' + K.esc(f.key) + '">' +
-            '<span class="tryonai-chooser__glyph" aria-hidden="true">' +
-            '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><g>' +
-            (K.GLYPHS[f.glyph] || K.GLYPHS.finish) +
-            "</g></svg></span>" +
+            glyph +
             '<span class="tryonai-chooser__label">' + K.esc(f.label) + "</span>" +
             '<span class="tryonai-chooser__arrow" aria-hidden="true">' +
             '<svg viewBox="0 0 28 12" width="24" height="11" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="square"><path d="M0 6h26M21 1l5 5-5 5"/></svg>' +
