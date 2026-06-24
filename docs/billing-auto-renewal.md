@@ -60,6 +60,11 @@ code is needed — Shopify drives it.
 
 ### Required step — Partner Dashboard (not in code)
 
+> **Don't see a "Pricing" section?** It lives under the App Store listing and
+> only exists once the app is on **public distribution** with a listing. See
+> [`docs/managed-pricing-setup.md`](./managed-pricing-setup.md) for the full
+> distribution + Managed Pricing setup. The steps below assume that's done.
+
 Managed Pricing plans and their trial days are configured in the Shopify
 Partner Dashboard, **not** in this repository:
 
