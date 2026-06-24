@@ -38,6 +38,13 @@ interface LoaderData {
     cap: number;
     pctUsed: number;
   };
+  sales: {
+    valueAllTimeLabel: string;
+    valueCycleLabel: string;
+    addsAllTime: number;
+    addsCycle: number;
+    hasData: boolean;
+  };
   recentTryOns: RecentTryOn[];
   planPageUrl: string;
 }
@@ -49,6 +56,25 @@ const TRYON_BLOCK_HANDLE = "tryon_button";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+// Format a shop-currency amount. Formatted on the server with a fixed locale so
+// SSR and client hydration produce identical text (same reasoning as the
+// timestamp formatter below). Falls back to a plain 2-decimal number when the
+// beacon never captured a currency code.
+function formatMoney(value: number, currency: string | null): string {
+  if (currency && /^[A-Z]{3}$/.test(currency)) {
+    try {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency,
+        maximumFractionDigits: 2,
+      }).format(value);
+    } catch {
+      /* unknown currency code — fall through */
+    }
+  }
+  return value.toFixed(2);
 }
 
 // Format on the server with an explicit locale + timeZone so SSR and client
@@ -101,6 +127,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         })
       : 0;
 
+  // Tool-driven add-to-cart attribution for THIS shop: the cart value the app's
+  // try-ons drove (the merchant-facing "sales impact"). Grouped by currency so a
+  // multi-currency shop isn't silently summed under one symbol; the dominant
+  // currency drives the headline (a shop is almost always single-currency).
+  const cartByCurrency = await db.cartEvent.groupBy({
+    by: ["currency"],
+    where: { shop },
+    _count: { _all: true },
+    _sum: { lineValue: true },
+  });
+  let salesValueAllTime = 0;
+  let salesAddsAllTime = 0;
+  let salesCurrency: string | null = null;
+  let dominantCount = -1;
+  for (const r of cartByCurrency) {
+    salesValueAllTime += r._sum.lineValue ?? 0;
+    salesAddsAllTime += r._count._all;
+    if (r.currency && r._count._all > dominantCount) {
+      dominantCount = r._count._all;
+      salesCurrency = r.currency;
+    }
+  }
+  const cartCycleAgg = await db.cartEvent.aggregate({
+    where: { shop, cycleStart },
+    _count: { _all: true },
+    _sum: { lineValue: true },
+  });
+  const salesValueCycle = cartCycleAgg._sum.lineValue ?? 0;
+  const salesAddsCycle = cartCycleAgg._count._all;
+
   const recentTryOnsRaw = await db.usageLog.findMany({
     where: { shop },
     orderBy: { createdAt: "desc" },
@@ -139,6 +195,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       used,
       cap,
       pctUsed: cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0,
+    },
+    sales: {
+      valueAllTimeLabel: formatMoney(round2(salesValueAllTime), salesCurrency),
+      valueCycleLabel: formatMoney(round2(salesValueCycle), salesCurrency),
+      addsAllTime: salesAddsAllTime,
+      addsCycle: salesAddsCycle,
+      hasData: salesAddsAllTime > 0,
     },
     recentTryOns: recentTryOnsRaw.map((r) => ({
       id: r.id,
@@ -248,6 +311,37 @@ export default function Index() {
           />
         </s-stack>
       </s-section>
+
+      {data.recentTryOns.length > 0 && (
+        <s-section heading="Value added to cart">
+          <s-paragraph>
+            Total value of items shoppers added to their cart after using
+            TryOnAI (Virtual Try-On, Outfit Stylist, and Size Recommender).
+          </s-paragraph>
+          <s-stack direction="inline" gap="base">
+            <StatCard
+              label="All time"
+              value={data.sales.valueAllTimeLabel}
+              sub={`${data.sales.addsAllTime.toLocaleString("en-US")} add-to-cart${
+                data.sales.addsAllTime === 1 ? "" : "s"
+              }`}
+            />
+            <StatCard
+              label="This billing cycle"
+              value={data.sales.valueCycleLabel}
+              sub={`${data.sales.addsCycle.toLocaleString("en-US")} add-to-cart${
+                data.sales.addsCycle === 1 ? "" : "s"
+              }`}
+            />
+          </s-stack>
+          {!data.sales.hasData && (
+            <s-paragraph>
+              No add-to-carts attributed yet. As shoppers add items after a
+              try-on, the value they drive will appear here.
+            </s-paragraph>
+          )}
+        </s-section>
+      )}
 
       <s-section accessibilityLabel="Recent try-ons">
         <s-stack direction="inline" gap="base">
