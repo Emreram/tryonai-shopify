@@ -33,4 +33,4 @@ jobs:
       - name: Deploy to Shopify
         env:
           SHOPIFY_CLI_PARTNERS_TOKEN: ${{ secrets.SHOPIFY_CLI_PARTNERS_TOKEN }}
-        run: npx -y @shopify/cli@latest app deploy --force
+        run: npx -y @shopify/cli@latest app deploy --allow-updates
