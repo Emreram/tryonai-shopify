@@ -657,7 +657,6 @@
         fetchSent: null,
         firstByte: null,
         firstPartial: null,
-        preview: null,
         completed: null,
         rendered: null,
       };
@@ -817,13 +816,10 @@
                 if (t.firstPartial === null) t.firstPartial = performance.now();
                 lastB64 = evt.b64; // stash only — single unveil owns the pixels
                 nudgeFromRealSignal("partial", evt.index || 0); // use timing only
-              } else if (evt.kind === "preview") {
-                if (t.preview === null) t.preview = performance.now();
-                lastB64 = evt.b64; // stash only — no early reveal
-                nudgeFromRealSignal("preview"); // use timing only
               } else if (evt.kind === "completed") {
                 t.completed = performance.now();
                 lastB64 = evt.b64;
+                if (evt.mediaType) state.resultMediaType = evt.mediaType;
                 // The single unveil: end the journey, then wipe in the FINAL.
                 await unveilFinal(evt.b64);
                 t.rendered = performance.now();
@@ -869,8 +865,7 @@
             downsample_to_fetch: delta(t.fetchSent, t.downsampleDone),
             fetch_to_first_byte: delta(t.firstByte, t.fetchSent),
             first_byte_to_first_partial: delta(t.firstPartial, t.firstByte),
-            first_byte_to_preview: delta(t.preview, t.firstByte),
-            preview_to_completed: delta(t.completed, t.preview),
+            first_partial_to_completed: delta(t.completed, t.firstPartial),
             first_byte_to_completed: delta(t.completed, t.firstByte),
             completed_to_rendered: delta(t.rendered, t.completed),
             total_client: delta(t.rendered ?? t.completed, t.click),
@@ -1035,26 +1030,21 @@
       return idx;
     }
 
-    // A real backend event (preview / partial) means the model is genuinely far
-    // along — pull the bar forward to a matching FLOOR (forward-only, no pixels
-    // shown) so a fast generation stops crawling the scripted timeline. The
-    // scripted journey is the floor; this is the accelerator; creep is the net.
+    // A real backend `partial` frame means the model is genuinely far along —
+    // pull the bar forward to a matching FLOOR (forward-only, no pixels shown)
+    // so a fast generation stops crawling the scripted timeline. The scripted
+    // journey is the floor; this is the accelerator; creep is the net.
     function nudgeFromRealSignal(kind, index) {
       if (state.journeyDone) return;
-      let floor;
-      if (kind === "preview") {
-        floor = 88; // a complete (low-res) image exists — we're close
-      } else if (kind === "partial") {
-        floor = index >= 2 ? 88 : index === 1 ? 84 : 78;
-      } else {
-        return;
-      }
+      if (kind !== "partial") return;
+      const floor = index >= 2 ? 88 : index === 1 ? 84 : 78;
       const stepIdx = journeyStepForFloor(floor);
       if (stepIdx > state.journeyStep) applyJourneyStep(stepIdx);
       setProgressTarget(floor);
-      // Preview = essentially done generating; enter the calm creep early so the
-      // bar/label keep moving through the final stretch.
-      if (kind === "preview") startCreep();
+      // Last partial = essentially done generating; enter the calm creep early
+      // so the bar/label keep moving through the final stretch. This used to be
+      // driven by the separate low-quality preview pass, which no longer exists.
+      if (index >= 2) startCreep();
     }
 
     function advanceJourney() {
@@ -1193,8 +1183,15 @@
       state.journeyTimer = null;
     }
 
+    // The server asks the image model for JPEG, but reports the format it
+    // actually got on the `completed` frame. Trust that when present so a
+    // provider that ignores output_format (e.g. returning PNG) still renders.
+    function resultMediaType() {
+      return state.resultMediaType || "image/jpeg";
+    }
+
     function enterRevealFromB64(b64, selfie) {
-      const dataUrl = "data:image/jpeg;base64," + b64;
+      const dataUrl = "data:" + resultMediaType() + ";base64," + b64;
       state.lastResult = dataUrl;
       state.lastResultBlob = null;
       state.resultFinalReady = false;
@@ -1231,7 +1228,7 @@
 
     async function finishReveal(b64) {
       state.journeyDone = true; // defensive: short-circuit any late journey tick
-      const dataUrl = "data:image/jpeg;base64," + b64;
+      const dataUrl = "data:" + resultMediaType() + ";base64," + b64;
       state.lastResult = dataUrl;
       try {
         const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));

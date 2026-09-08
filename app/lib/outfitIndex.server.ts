@@ -16,7 +16,7 @@ import {
   type CanonicalColor,
   type ColorFamily,
 } from "./colorTheory";
-import { runStructured, computeTextCostUsd } from "./openaiText.server";
+import { runStructured, computeTextCostUsd } from "./textModel.server";
 
 export type OutfitSlot =
   | "top"

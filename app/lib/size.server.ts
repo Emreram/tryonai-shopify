@@ -15,7 +15,7 @@ import {
   type Biometrics,
   type SizeCandidate,
 } from "./sizeChart";
-import { runStructured, computeTextCostUsd } from "./openaiText.server";
+import { runStructured, computeTextCostUsd } from "./textModel.server";
 
 export interface SizeProductRequest {
   handle: string;

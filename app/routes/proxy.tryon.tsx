@@ -1,10 +1,9 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
-  computeCostUsd,
   generateTryOn,
-  OPENAI_TRYON_MODEL,
-  TryOnSafetyRejectionError,
-} from "../lib/openai.server";
+  TRYON_IMAGE_MODEL,
+} from "../lib/tryonModel.server";
+import { ModelError, shopperMessageFor } from "../lib/openrouter.server";
 import { verifyProxySignature } from "../lib/proxy.server";
 import {
   buildKey as buildRateLimitKey,
@@ -86,8 +85,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
 // 1024x1024 (square) is intentionally NOT accepted as an input size: it is the
 // most expensive output path (~$0.092/try-on vs ~$0.075 portrait) and squeezes
 // plan margins. Square selfies fall back to DEFAULT_SIZE (1024x1536) at the
-// validation step below. The low-quality PREVIEW pass still renders at 1024x1024
-// internally (see previewSizeFor in openai.server.ts) — that is separate and cheap.
+// validation step below.
 const SUPPORTED_SIZES = new Set([
   "1024x1536",
   "1536x1024",
@@ -428,7 +426,7 @@ export async function action({ request }: ActionFunctionArgs) {
       size,
       quality: DEFAULT_QUALITY,
       promptVer: TRYON_CACHE_PROMPT_VERSION,
-      model: OPENAI_TRYON_MODEL,
+      model: TRYON_IMAGE_MODEL,
     });
     const cached = await getCachedTryOn(cacheKey);
     if (cached) {
@@ -525,58 +523,29 @@ export async function action({ request }: ActionFunctionArgs) {
             const t = event.openai;
             const safe = (a: number | null, b: number) =>
               a === null ? null : Math.round(a - b);
-            const fromRequest = (a: number | null) => safe(a, tRequestReceived);
-            const lowTotal = safe(t.low.tCompleted, t.low.tOpenaiStart);
-            const mediumTotal = safe(t.medium.tCompleted, t.medium.tOpenaiStart);
             const log = {
               event: "tryon_complete",
-              route_owner: "openai-direct",
-              model: OPENAI_TRYON_MODEL,
-              quality: DEFAULT_QUALITY,
+              route_owner: "openrouter",
+              model: t.model,
+              quality: t.quality,
               size,
-              output_format: "jpeg",
+              aspect_ratio: t.aspectRatio,
+              media_type: t.mediaType,
               shop,
               request_id: reqId,
               plan,
               selfie_bytes: selfieBytes,
               garment_bytes: garmentBytes,
-              openai_request_id: t.requestId,
-              openai_processing_ms: t.processingMs,
-              openai_date_header: t.dateHeader,
-              low_openai_request_id: t.low.requestId,
-              low_openai_processing_ms: t.low.processingMs,
-              low_size: t.low.size,
-              medium_openai_request_id: t.medium.requestId,
-              medium_openai_processing_ms: t.medium.processingMs,
-              medium_size: t.medium.size,
-              preview_source: t.previewSource,
-              fallback_to_preview: t.fallbackToPreview,
-              warning: t.warning,
-              low_total_ms: lowTotal,
-              medium_total_ms: mediumTotal,
+              openrouter_request_id: t.requestId,
               timings_ms: {
                 validate: Math.round(tValidated - tRequestReceived),
                 response_start: Math.round(tResponseStart - tValidated),
-                openai_first_event: safe(t.tFirstEvent, t.tOpenaiStart),
-                openai_first_partial: safe(t.tFirstPartial, t.tOpenaiStart),
-                openai_total: safe(t.tCompleted, t.tOpenaiStart),
-                preview: fromRequest(t.tPreview),
-                final_delivered: fromRequest(t.tFinalDelivered),
-                low_first_event: safe(t.low.tFirstEvent, t.low.tOpenaiStart),
-                low_total: lowTotal,
-                medium_first_event: safe(t.medium.tFirstEvent, t.medium.tOpenaiStart),
-                medium_first_partial: safe(t.medium.tFirstPartial, t.medium.tOpenaiStart),
-                medium_total: mediumTotal,
-                total_server:
-                  t.tCompleted === null
-                    ? null
-                    : Math.round(t.tCompleted - tRequestReceived),
+                model_first_event: safe(t.tFirstEvent, t.tStart),
+                model_total: safe(t.tCompleted, t.tStart),
+                total_server: safe(t.tCompleted, tRequestReceived),
               },
               usage: t.usage,
-              low_usage: t.low.usage,
-              medium_usage: t.medium.usage,
-              low_error: t.low.error,
-              medium_error: t.medium.error,
+              model_error: t.error,
             };
             console.log(JSON.stringify(log));
             timingPayload = log;
@@ -585,29 +554,28 @@ export async function action({ request }: ActionFunctionArgs) {
 
             try {
               const inputTokens =
-                typeof t.usage?.input_tokens === "number"
-                  ? Math.round(t.usage.input_tokens)
-                  : null;
+                t.usage?.prompt_tokens === null ||
+                t.usage?.prompt_tokens === undefined
+                  ? null
+                  : Math.round(t.usage.prompt_tokens);
               const outputTokens =
-                typeof t.usage?.output_tokens === "number"
-                  ? Math.round(t.usage.output_tokens)
-                  : null;
-              const openaiMs =
-                t.tCompleted !== null
-                  ? Math.round(t.tCompleted - t.tOpenaiStart)
-                  : null;
+                t.usage?.completion_tokens === null ||
+                t.usage?.completion_tokens === undefined
+                  ? null
+                  : Math.round(t.usage.completion_tokens);
+              const openaiMs = safe(t.tCompleted, t.tStart);
               const usageLog = await db.usageLog.create({
                 data: {
                   shop,
                   requestId: reqId,
                   openaiRequestId: t.requestId ?? null,
                   plan,
-                  // True COGS = final (medium) pass + the always-on low-quality
-                  // preview pass. The preview was previously uncounted, so costUsd
-                  // understated real cost by ~30%; the daily cost ceiling and any
-                  // pricing validation depend on this being the full per-try-on cost.
-                  costUsd:
-                    computeCostUsd(t.medium.usage) + computeCostUsd(t.low.usage),
+                  // OpenRouter reports the authoritative USD charge for the
+                  // render, so COGS is no longer reconstructed from a local
+                  // rate table that could silently drift and trip the daily
+                  // spend fuse early. One image request per try-on, so this is
+                  // the full per-try-on cost.
+                  costUsd: t.usage?.cost ?? 0,
                   inputTokens,
                   outputTokens,
                   openaiMs,
@@ -675,17 +643,18 @@ export async function action({ request }: ActionFunctionArgs) {
 
             // Persist to the result cache (A3) AFTER the client already has the
             // image (the completed + timing frames were sent above), so it adds
-            // no perceived latency. Only cache a genuine successful final — never
-            // a low-quality fallback served because the medium pass failed.
+            // no perceived latency. `finalB64` is only ever set by a `completed`
+            // frame, which the single pass emits only on a real success — there
+            // is no degraded-quality fallback image that could be cached now.
             // Best-effort: putCachedTryOn never throws.
-            if (cacheKey && finalB64 && !t.fallbackToPreview) {
+            if (cacheKey && finalB64) {
               await putCachedTryOn({
                 cacheKey,
                 b64: finalB64,
                 shop,
                 size,
                 promptVer: TRYON_CACHE_PROMPT_VERSION,
-                model: OPENAI_TRYON_MODEL,
+                model: TRYON_IMAGE_MODEL,
               });
             }
           } else {
@@ -704,16 +673,22 @@ export async function action({ request }: ActionFunctionArgs) {
           await rateLimitDecrement(rateLimitKey);
         }
         const msg = err instanceof Error ? err.message : "Unknown error";
-        const safety = err instanceof TryOnSafetyRejectionError ? err : null;
+        // OpenRouter separates the failure modes by HTTP status: 402 = out of
+        // credits, 429 = rate limited, 401 = bad key, 403 = moderation block.
+        // Log the classified kind so an unpaid balance is never mistaken for a
+        // traffic spike (the ambiguity that made this hard to debug on OpenAI,
+        // where 429 meant both).
+        const failure = err instanceof ModelError ? err : null;
         console.error(
           JSON.stringify({
             event: "tryon_error",
             error: msg,
-            // Keep the OpenAI request id in logs for support tickets even though
-            // the shopper sees a friendly message.
-            error_code: safety ? "safety_rejected" : null,
-            openai_request_id: safety ? safety.openaiRequestId : null,
-            openai_code: safety ? safety.openaiCode : null,
+            error_code: failure?.kind ?? null,
+            openrouter_status: failure?.status ?? null,
+            openrouter_error_type: failure?.errorType ?? null,
+            provider_code: failure?.providerCode ?? null,
+            retry_after_s: failure?.retryAfterSeconds ?? null,
+            retryable: failure?.retryable ?? false,
             shop,
             request_id: reqId,
             timing: timingPayload,
@@ -750,14 +725,11 @@ export async function action({ request }: ActionFunctionArgs) {
             }),
           );
         }
-        if (safety) {
+        if (failure) {
           send({
             kind: "error",
-            code: "safety_rejected",
-            error:
-              "We couldn't create a try-on from that photo. For best results, " +
-              "upload a clear, well-lit photo of just you, facing the camera — " +
-              "with no one else in the frame.",
+            code: failure.kind,
+            error: shopperMessageFor(failure.kind),
           });
         } else {
           send({ kind: "error", error: `Try-on generation failed: ${msg}` });

@@ -257,7 +257,7 @@
     }
 
     function onTryOnEvent(evt) {
-      if (evt.kind === "partial" || evt.kind === "preview") { if (evt.b64) state.resultB64 = evt.b64; if (state.journey) state.journey.nudge(); }
+      if (evt.kind === "partial") { if (evt.b64) state.resultB64 = evt.b64; if (state.journey) state.journey.nudge(); }
       else if (evt.kind === "completed") state.resultB64 = evt.b64;
       else if (evt.kind === "error") throw K.uiError(tryonErr(evt.error));
     }
