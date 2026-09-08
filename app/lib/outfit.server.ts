@@ -20,7 +20,7 @@ import {
   type ShopIndex,
 } from "./outfitIndex.server";
 import { fetchComplementary } from "./catalog.server";
-import { runStructured, computeTextCostUsd } from "./openaiText.server";
+import { runStructured, computeTextCostUsd } from "./textModel.server";
 
 export type Occasion = "everyday" | "work" | "date" | "event" | "active";
 export type Vibe = "classic" | "casual" | "streetwear" | "elegant" | "minimal";

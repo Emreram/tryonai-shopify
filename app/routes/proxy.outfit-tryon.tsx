@@ -15,13 +15,12 @@ import { decrement as rateLimitDecrement, hashUserId } from "../lib/rateLimit.se
 import { outfitBackendEnabled } from "../lib/outfitFlags.server";
 import { verifyProxySignature } from "../lib/proxy.server";
 import {
-  computeCostUsd,
   generateOutfitLayered,
   generateTryOn,
-  OPENAI_TRYON_MODEL,
-  TryOnSafetyRejectionError,
+  TRYON_IMAGE_MODEL,
   type GarmentInput,
-} from "../lib/openai.server";
+} from "../lib/tryonModel.server";
+import { ModelError, shopperMessageFor } from "../lib/openrouter.server";
 import {
   cacheActive,
   computeTryOnCacheKey,
@@ -174,7 +173,7 @@ export async function action({ request }: ActionFunctionArgs) {
       size,
       quality: "medium",
       promptVer: TRYON_CACHE_PROMPT_VERSION + ":outfit",
-      model: OPENAI_TRYON_MODEL,
+      model: TRYON_IMAGE_MODEL,
     });
     const cached = await getCachedTryOn(cacheKey);
     if (cached) {
@@ -223,7 +222,7 @@ export async function action({ request }: ActionFunctionArgs) {
               finalB64 = ev.b64;
               send({ kind: "completed", b64: ev.b64 });
             } else if (ev.kind === "usage") {
-              costUsd = ev.usages.reduce((acc, u) => acc + computeCostUsd(u), 0);
+              costUsd = ev.usages.reduce((acc, u) => acc + (u?.cost ?? 0), 0);
               completed = true;
             } else if (ev.kind === "error") {
               throw ev.error;
@@ -243,9 +242,7 @@ export async function action({ request }: ActionFunctionArgs) {
           })) {
             if (cancelled) break;
             if (ev.kind === "timing") {
-              costUsd =
-                computeCostUsd(ev.openai.medium.usage) +
-                computeCostUsd(ev.openai.low.usage);
+              costUsd = ev.openai.usage?.cost ?? 0;
               completed = true;
               send({ kind: "timing", requestId: reqId, cost_usd: costUsd });
             } else {
@@ -272,7 +269,7 @@ export async function action({ request }: ActionFunctionArgs) {
             shop,
             size,
             promptVer: TRYON_CACHE_PROMPT_VERSION + ":outfit",
-            model: OPENAI_TRYON_MODEL,
+            model: TRYON_IMAGE_MODEL,
           });
         }
 
@@ -290,7 +287,7 @@ export async function action({ request }: ActionFunctionArgs) {
       } catch (err) {
         if (!completed && rateLimitKey) await rateLimitDecrement(rateLimitKey);
         if (cancelled || isAbortError(err)) return;
-        const safety = err instanceof TryOnSafetyRejectionError ? err : null;
+        const failure = err instanceof ModelError ? err : null;
         await logUsage({ shop, reqId, plan, cycleStart, costUsd: 0, status: "error" });
         console.error(
           JSON.stringify({
@@ -298,16 +295,17 @@ export async function action({ request }: ActionFunctionArgs) {
             shop,
             request_id: reqId,
             error: err instanceof Error ? err.message : String(err),
-            error_code: safety ? "safety_rejected" : null,
+            error_code: failure?.kind ?? null,
+            openrouter_status: failure?.status ?? null,
+            provider_code: failure?.providerCode ?? null,
+            retryable: failure?.retryable ?? false,
           }),
         );
-        if (safety) {
+        if (failure) {
           send({
             kind: "error",
-            code: "safety_rejected",
-            error:
-              "We couldn't create the outfit try-on from that photo. For best results, " +
-              "upload a clear, well-lit photo of just you, facing the camera.",
+            code: failure.kind,
+            error: shopperMessageFor(failure.kind),
           });
         } else {
           send({ kind: "error", error: "Outfit try-on failed. Please try again." });
